@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- [audio] Fall back to the next CDN URL when a fetch returns a non-206 status (e.g. HTTP 530) instead of failing the track. Backport of upstream PR [#1722](https://github.com/librespot-org/librespot/pull/1722) for the spotatui fork.
+
 ## [0.8.0] - 2025-11-10
 
 ### Added
