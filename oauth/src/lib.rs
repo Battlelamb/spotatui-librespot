@@ -193,6 +193,30 @@ const MAX_SKIPPED_REQUESTS: usize = 64;
 const BAD_REQUEST_RESPONSE: &[u8] =
     b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nConnection: close\r\n\r\n";
 
+/// Reader that refuses to keep reading once `deadline` has passed.
+///
+/// A socket read timeout applies per `recv` call, and one `read_line` issues as
+/// many of those as it needs to reach a newline. A peer sending a byte at a time
+/// therefore gets the full timeout back on every byte, and a single `read_line`
+/// can outlive the overall deadline by roughly timeout times the byte cap.
+/// Checking here bounds the whole read rather than each syscall inside it.
+struct DeadlineReader<R> {
+    inner: R,
+    deadline: Instant,
+}
+
+impl<R: Read> Read for DeadlineReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if Instant::now() >= self.deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "OAuth callback deadline reached",
+            ));
+        }
+        self.inner.read(buf)
+    }
+}
+
 /// Read the request line from `reader`, skipping any blank lines that precede it.
 ///
 /// Returns `None` when the peer closed the connection, timed out, or sent nothing
@@ -205,14 +229,11 @@ const BAD_REQUEST_RESPONSE: &[u8] =
 /// Abandoning the connection on a blank line would discard the code and then
 /// block forever waiting for a redirect that has already been delivered.
 ///
-/// `deadline` bounds the whole login, so a peer dribbling one byte at a time
-/// cannot keep resetting the socket read timeout and outlive it.
-fn read_request_line(reader: &mut impl BufRead, deadline: Instant) -> Option<String> {
+/// Time is bounded by the caller wrapping `reader` in a [`DeadlineReader`], so
+/// no sequence of reads here can outlive the login deadline.
+fn read_request_line(reader: &mut impl BufRead) -> Option<String> {
     // MAX_BLANK_LINES blanks plus the request line that follows them.
     for _ in 0..=MAX_BLANK_LINES {
-        if Instant::now() >= deadline {
-            return None;
-        }
         let mut line = String::new();
         match reader.take(MAX_REQUEST_LINE_BYTES).read_line(&mut line) {
             // Connection closed without sending a request.
@@ -327,8 +348,13 @@ fn accept_authcode(
         // this function exists to avoid. Nothing is given up by not doing it:
         // browsers do not pipeline, and the 400 below closes the connection, so
         // a browser with more to say opens a new one and we accept that instead.
-        let mut reader = BufReader::new(&stream);
-        let Some(request_line) = read_request_line(&mut reader, deadline) else {
+        // The socket timeout bounds one recv; the DeadlineReader bounds the whole
+        // read, so a peer dribbling bytes cannot win back the timeout per byte.
+        let mut reader = BufReader::new(DeadlineReader {
+            inner: &stream,
+            deadline,
+        });
+        let Some(request_line) = read_request_line(&mut reader) else {
             debug!("OAuth callback: no request line, still listening");
             skip_connection!()
         };
@@ -682,6 +708,52 @@ mod test {
         Instant::now() + Duration::from_secs(60)
     }
 
+    /// A reader that hands back one byte per call, standing in for a peer that
+    /// dribbles bytes to win the socket timeout back on every one of them.
+    struct DribbleReader {
+        remaining: usize,
+    }
+
+    impl Read for DribbleReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.remaining == 0 || buf.is_empty() {
+                return Ok(0);
+            }
+            self.remaining -= 1;
+            buf[0] = b'x';
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn deadline_reader_passes_reads_through_before_the_deadline() {
+        let mut reader = DeadlineReader {
+            inner: Cursor::new(b"hello".to_vec()),
+            deadline: test_deadline(),
+        };
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).expect("read before deadline");
+        assert_eq!(buf, b"hello");
+    }
+
+    /// The bound has to sit at the read layer. A socket read timeout applies per
+    /// recv, so one read_line over a dribbling peer would otherwise run for
+    /// timeout times the byte cap regardless of the overall deadline.
+    #[test]
+    fn deadline_reader_stops_a_dribbling_peer_mid_line() {
+        let mut reader = BufReader::new(DeadlineReader {
+            // Never sends a newline, so read_line would keep asking for more.
+            inner: DribbleReader {
+                remaining: usize::MAX,
+            },
+            deadline: Instant::now(),
+        });
+        assert!(
+            read_request_line(&mut reader).is_none(),
+            "an expired deadline must end the read rather than accumulate bytes"
+        );
+    }
+
     /// Drive `accept_authcode` against a listener on port 0 while `client` talks
     /// to it, and return whatever the server resolved.
     ///
@@ -720,8 +792,7 @@ mod test {
     #[test]
     fn request_line_read_past_leading_blank_lines() {
         let mut reader = Cursor::new(format!("\r\n\r\n{CODE_REQUEST}").into_bytes());
-        let line =
-            read_request_line(&mut reader, test_deadline()).expect("should find the request line");
+        let line = read_request_line(&mut reader).expect("should find the request line");
         assert!(
             line.starts_with("GET /login?code=testcode123"),
             "got: {line:?}"
@@ -731,13 +802,13 @@ mod test {
     #[test]
     fn request_line_none_when_peer_sends_nothing() {
         let mut reader = Cursor::new(Vec::new());
-        assert!(read_request_line(&mut reader, test_deadline()).is_none());
+        assert!(read_request_line(&mut reader).is_none());
     }
 
     #[test]
     fn request_line_none_when_only_blank_lines() {
         let mut reader = Cursor::new("\r\n".repeat(MAX_BLANK_LINES + 4).into_bytes());
-        assert!(read_request_line(&mut reader, test_deadline()).is_none());
+        assert!(read_request_line(&mut reader).is_none());
     }
 
     /// The constant means what it says: MAX_BLANK_LINES blanks still leave the
@@ -746,8 +817,7 @@ mod test {
     fn request_line_found_after_exactly_max_blank_lines() {
         let blanks = "\r\n".repeat(MAX_BLANK_LINES);
         let mut reader = Cursor::new(format!("{blanks}{CODE_REQUEST}").into_bytes());
-        let line =
-            read_request_line(&mut reader, test_deadline()).expect("should find the request line");
+        let line = read_request_line(&mut reader).expect("should find the request line");
         assert!(
             line.starts_with("GET /login?code=testcode123"),
             "got: {line:?}"
@@ -759,8 +829,7 @@ mod test {
     fn request_line_is_length_capped() {
         let flood = "x".repeat((MAX_REQUEST_LINE_BYTES as usize) * 2);
         let mut reader = Cursor::new(flood.into_bytes());
-        let line = read_request_line(&mut reader, test_deadline())
-            .expect("capped read still yields a line");
+        let line = read_request_line(&mut reader).expect("capped read still yields a line");
         assert_eq!(line.len(), MAX_REQUEST_LINE_BYTES as usize);
     }
 
