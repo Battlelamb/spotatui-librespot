@@ -186,6 +186,15 @@ const MAX_BLANK_LINES: usize = 8;
 /// grow the read buffer without bound.
 const MAX_REQUEST_LINE_BYTES: u64 = 8 * 1024;
 
+/// Header lines stepped over after a request line, before giving up on the
+/// connection. A browser sends a dozen or so.
+const MAX_HEADER_LINES: usize = 64;
+
+/// Read budget once this connection has already been answered. Anything
+/// pipelined is buffered by then, so waiting the full REQUEST_READ_TIMEOUT for
+/// more would just stall the callback waiting in the accept backlog.
+const FOLLOW_UP_READ_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// Requests handled on one connection, and unusable connections tolerated in
 /// total. Both exist only so a misbehaving client cannot keep the server alive
 /// indefinitely.
@@ -222,6 +231,34 @@ fn read_request_line(reader: &mut impl BufRead) -> Option<String> {
         }
     }
     None
+}
+
+/// Read to the end of the current request's header block, so that the next call
+/// to `read_request_line` lands on a request line rather than on a header of the
+/// request we just answered.
+///
+/// Returns false when the connection ended or misbehaved, in which case there is
+/// nothing further to read from it.
+///
+/// Without this, holding a connection open after answering it walks the previous
+/// request's headers one line at a time, treats each as a request, answers each
+/// with another 400, and exhausts the per-connection budget long before a
+/// pipelined callback further down the stream is reached.
+fn consume_headers(reader: &mut impl BufRead) -> bool {
+    for _ in 0..MAX_HEADER_LINES {
+        let mut line = String::new();
+        match reader.take(MAX_REQUEST_LINE_BYTES).read_line(&mut line) {
+            Ok(0) => return false,
+            // The blank line that terminates the header block.
+            Ok(_) if line.trim().is_empty() => return true,
+            Ok(_) => continue,
+            Err(e) => {
+                debug!("OAuth callback: header read error ({e}), dropping the connection");
+                return false;
+            }
+        }
+    }
+    false
 }
 
 /// Spawn HTTP server at provided socket address to accept OAuth callback and return auth code.
@@ -319,13 +356,15 @@ fn accept_authcode(
                 break;
             };
 
-            let Some(redirect_url) = request_line.split_whitespace().nth(1) else {
-                debug!("OAuth callback: unparseable request line, still listening");
-                let _ = (&stream).write_all(BAD_REQUEST_RESPONSE);
-                break;
-            };
-
-            match get_code(&("http://localhost".to_string() + redirect_url)) {
+            match request_line
+                .split_whitespace()
+                .nth(1)
+                .ok_or(())
+                .and_then(|target| {
+                    get_code(&("http://localhost".to_string() + target)).map_err(|e| {
+                        debug!("OAuth callback: request carried no code ({e}), still listening");
+                    })
+                }) {
                 Ok(code) => {
                     let response = format!(
                         "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{}",
@@ -344,11 +383,19 @@ fn accept_authcode(
                 // Browser noise (`/favicon.ico`, `/`, a pre-flight). Answer it so
                 // the browser is not left hanging, then keep reading: a pipelined
                 // callback may already be buffered behind this request.
-                Err(e) => {
-                    debug!("OAuth callback: request carried no code ({e}), still listening");
+                Err(()) => {
                     let _ = (&stream).write_all(BAD_REQUEST_RESPONSE);
                 }
             }
+
+            // Step over the rest of this request before looking for the next
+            // one, or its headers would be read as if each were a request line.
+            if !consume_headers(&mut reader) {
+                break;
+            }
+            // Already answered once, so anything else is either buffered or not
+            // coming; do not hold the port waiting on it.
+            let _ = stream.set_read_timeout(Some(FOLLOW_UP_READ_TIMEOUT));
         }
 
         skip_connection!()
@@ -792,6 +839,51 @@ mod test {
         })
         .expect("should recover the pipelined code");
         assert_eq!(code.secret(), "testcode123");
+    }
+
+    /// The same, but with the header block a real browser actually sends. Header
+    /// lines have to be stepped over as headers; read as request lines they each
+    /// draw a 400 and burn the per-connection budget before the callback behind
+    /// them is ever reached.
+    #[test]
+    fn pipelined_callback_behind_a_realistic_header_block() {
+        let code = run_listener(|addr| {
+            let noise = "GET /favicon.ico HTTP/1.1\r\n\
+                 Host: 127.0.0.1:8989\r\n\
+                 User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Firefox/149.0\r\n\
+                 Accept: image/avif,image/webp,*/*\r\n\
+                 Accept-Language: en-US,en;q=0.5\r\n\
+                 Accept-Encoding: gzip, deflate, br\r\n\
+                 Connection: keep-alive\r\n\
+                 Sec-Fetch-Dest: image\r\n\
+                 Sec-Fetch-Mode: no-cors\r\n\
+                 Sec-Fetch-Site: same-origin\r\n\
+                 Pragma: no-cache\r\n\
+                 Cache-Control: no-cache\r\n\
+                 \r\n";
+            let _stream = send(addr, format!("{noise}{CODE_REQUEST}").as_bytes());
+        })
+        .expect("headers must not be mistaken for requests");
+        assert_eq!(code.secret(), "testcode123");
+    }
+
+    #[test]
+    fn consume_headers_stops_at_the_blank_line() {
+        let mut reader = Cursor::new(
+            format!("Host: 127.0.0.1\r\nAccept: */*\r\n\r\n{CODE_REQUEST}").into_bytes(),
+        );
+        assert!(consume_headers(&mut reader));
+        let next = read_request_line(&mut reader).expect("request line after the header block");
+        assert!(
+            next.starts_with("GET /login?code=testcode123"),
+            "got: {next:?}"
+        );
+    }
+
+    #[test]
+    fn consume_headers_reports_a_truncated_request() {
+        let mut reader = Cursor::new(b"Host: 127.0.0.1\r\n".to_vec());
+        assert!(!consume_headers(&mut reader));
     }
 
     /// A browser that hangs up before reading the success page has still handed
