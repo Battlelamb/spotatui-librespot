@@ -186,19 +186,8 @@ const MAX_BLANK_LINES: usize = 8;
 /// grow the read buffer without bound.
 const MAX_REQUEST_LINE_BYTES: u64 = 8 * 1024;
 
-/// Header lines stepped over after a request line, before giving up on the
-/// connection. A browser sends a dozen or so.
-const MAX_HEADER_LINES: usize = 64;
-
-/// Read budget once this connection has already been answered. Anything
-/// pipelined is buffered by then, so waiting the full REQUEST_READ_TIMEOUT for
-/// more would just stall the callback waiting in the accept backlog.
-const FOLLOW_UP_READ_TIMEOUT: Duration = Duration::from_secs(1);
-
-/// Requests handled on one connection, and unusable connections tolerated in
-/// total. Both exist only so a misbehaving client cannot keep the server alive
-/// indefinitely.
-const MAX_REQUESTS_PER_CONNECTION: usize = 8;
+/// Unusable connections tolerated before giving up, so a client that only ever
+/// sends noise cannot hold the port open indefinitely.
 const MAX_SKIPPED_REQUESTS: usize = 64;
 
 const BAD_REQUEST_RESPONSE: &[u8] =
@@ -215,9 +204,15 @@ const BAD_REQUEST_RESPONSE: &[u8] =
 /// line and the request that carries the code can arrive on the same connection.
 /// Abandoning the connection on a blank line would discard the code and then
 /// block forever waiting for a redirect that has already been delivered.
-fn read_request_line(reader: &mut impl BufRead) -> Option<String> {
+///
+/// `deadline` bounds the whole login, so a peer dribbling one byte at a time
+/// cannot keep resetting the socket read timeout and outlive it.
+fn read_request_line(reader: &mut impl BufRead, deadline: Instant) -> Option<String> {
     // MAX_BLANK_LINES blanks plus the request line that follows them.
     for _ in 0..=MAX_BLANK_LINES {
+        if Instant::now() >= deadline {
+            return None;
+        }
         let mut line = String::new();
         match reader.take(MAX_REQUEST_LINE_BYTES).read_line(&mut line) {
             // Connection closed without sending a request.
@@ -231,34 +226,6 @@ fn read_request_line(reader: &mut impl BufRead) -> Option<String> {
         }
     }
     None
-}
-
-/// Read to the end of the current request's header block, so that the next call
-/// to `read_request_line` lands on a request line rather than on a header of the
-/// request we just answered.
-///
-/// Returns false when the connection ended or misbehaved, in which case there is
-/// nothing further to read from it.
-///
-/// Without this, holding a connection open after answering it walks the previous
-/// request's headers one line at a time, treats each as a request, answers each
-/// with another 400, and exhausts the per-connection budget long before a
-/// pipelined callback further down the stream is reached.
-fn consume_headers(reader: &mut impl BufRead) -> bool {
-    for _ in 0..MAX_HEADER_LINES {
-        let mut line = String::new();
-        match reader.take(MAX_REQUEST_LINE_BYTES).read_line(&mut line) {
-            Ok(0) => return false,
-            // The blank line that terminates the header block.
-            Ok(_) if line.trim().is_empty() => return true,
-            Ok(_) => continue,
-            Err(e) => {
-                debug!("OAuth callback: header read error ({e}), dropping the connection");
-                return false;
-            }
-        }
-    }
-    false
 }
 
 /// Spawn HTTP server at provided socket address to accept OAuth callback and return auth code.
@@ -344,61 +311,57 @@ fn accept_authcode(
             skip_connection!()
         }
         // Refuse to read from a connection we cannot bound, rather than risk
-        // blocking on it forever.
-        if let Err(e) = stream.set_read_timeout(Some(REQUEST_READ_TIMEOUT)) {
+        // blocking on it forever. Capped by the remaining overall budget so a
+        // late connection cannot read past the deadline.
+        let read_budget = REQUEST_READ_TIMEOUT
+            .min(deadline.saturating_duration_since(Instant::now()))
+            .max(Duration::from_millis(1));
+        if let Err(e) = stream.set_read_timeout(Some(read_budget)) {
             debug!("OAuth callback: cannot bound reads on this connection ({e}), skipping");
             skip_connection!()
         }
 
+        // Exactly one request per connection. Reading a second would mean
+        // framing the first (Content-Length, chunked encoding) to know where it
+        // ends, and getting that wrong loses the code, which is the very bug
+        // this function exists to avoid. Nothing is given up by not doing it:
+        // browsers do not pipeline, and the 400 below closes the connection, so
+        // a browser with more to say opens a new one and we accept that instead.
         let mut reader = BufReader::new(&stream);
-        for _ in 0..MAX_REQUESTS_PER_CONNECTION {
-            let Some(request_line) = read_request_line(&mut reader) else {
-                break;
-            };
+        let Some(request_line) = read_request_line(&mut reader, deadline) else {
+            debug!("OAuth callback: no request line, still listening");
+            skip_connection!()
+        };
 
-            match request_line
-                .split_whitespace()
-                .nth(1)
-                .ok_or(())
-                .and_then(|target| {
-                    get_code(&("http://localhost".to_string() + target)).map_err(|e| {
-                        debug!("OAuth callback: request carried no code ({e}), still listening");
-                    })
-                }) {
-                Ok(code) => {
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{}",
-                        message.len(),
-                        message
-                    );
-                    // Best effort. The code is already in hand, so a browser
-                    // that hung up before reading the page must not cost the
-                    // user the login.
-                    if let Err(e) = (&stream).write_all(response.as_bytes()) {
-                        debug!("OAuth callback: could not write the success page ({e})");
-                    }
+        let Some(redirect_url) = request_line.split_whitespace().nth(1) else {
+            debug!("OAuth callback: unparseable request line, still listening");
+            let _ = (&stream).write_all(BAD_REQUEST_RESPONSE);
+            skip_connection!()
+        };
 
-                    return Ok(code);
-                }
-                // Browser noise (`/favicon.ico`, `/`, a pre-flight). Answer it so
-                // the browser is not left hanging, then keep reading: a pipelined
-                // callback may already be buffered behind this request.
-                Err(()) => {
-                    let _ = (&stream).write_all(BAD_REQUEST_RESPONSE);
-                }
+        let code = match get_code(&("http://localhost".to_string() + redirect_url)) {
+            Ok(code) => code,
+            // Browser noise (`/favicon.ico`, `/`, a pre-flight). Answer it so the
+            // browser is not left hanging, then wait for the real redirect.
+            Err(e) => {
+                debug!("OAuth callback: request carried no code ({e}), still listening");
+                let _ = (&stream).write_all(BAD_REQUEST_RESPONSE);
+                skip_connection!()
             }
+        };
 
-            // Step over the rest of this request before looking for the next
-            // one, or its headers would be read as if each were a request line.
-            if !consume_headers(&mut reader) {
-                break;
-            }
-            // Already answered once, so anything else is either buffered or not
-            // coming; do not hold the port waiting on it.
-            let _ = stream.set_read_timeout(Some(FOLLOW_UP_READ_TIMEOUT));
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nConnection: close\r\n\r\n{}",
+            message.len(),
+            message
+        );
+        // Best effort. The code is already in hand, so a browser that hung up
+        // before reading the page must not cost the user the login.
+        if let Err(e) = (&stream).write_all(response.as_bytes()) {
+            debug!("OAuth callback: could not write the success page ({e})");
         }
 
-        skip_connection!()
+        return Ok(code);
     }
 }
 
@@ -714,6 +677,11 @@ mod test {
 
     const CODE_REQUEST: &str = "GET /login?code=testcode123 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
 
+    /// Far enough out that the deadline never fires during a unit test.
+    fn test_deadline() -> Instant {
+        Instant::now() + Duration::from_secs(60)
+    }
+
     /// Drive `accept_authcode` against a listener on port 0 while `client` talks
     /// to it, and return whatever the server resolved.
     ///
@@ -752,7 +720,8 @@ mod test {
     #[test]
     fn request_line_read_past_leading_blank_lines() {
         let mut reader = Cursor::new(format!("\r\n\r\n{CODE_REQUEST}").into_bytes());
-        let line = read_request_line(&mut reader).expect("should find the request line");
+        let line =
+            read_request_line(&mut reader, test_deadline()).expect("should find the request line");
         assert!(
             line.starts_with("GET /login?code=testcode123"),
             "got: {line:?}"
@@ -762,13 +731,13 @@ mod test {
     #[test]
     fn request_line_none_when_peer_sends_nothing() {
         let mut reader = Cursor::new(Vec::new());
-        assert!(read_request_line(&mut reader).is_none());
+        assert!(read_request_line(&mut reader, test_deadline()).is_none());
     }
 
     #[test]
     fn request_line_none_when_only_blank_lines() {
         let mut reader = Cursor::new("\r\n".repeat(MAX_BLANK_LINES + 4).into_bytes());
-        assert!(read_request_line(&mut reader).is_none());
+        assert!(read_request_line(&mut reader, test_deadline()).is_none());
     }
 
     /// The constant means what it says: MAX_BLANK_LINES blanks still leave the
@@ -777,7 +746,8 @@ mod test {
     fn request_line_found_after_exactly_max_blank_lines() {
         let blanks = "\r\n".repeat(MAX_BLANK_LINES);
         let mut reader = Cursor::new(format!("{blanks}{CODE_REQUEST}").into_bytes());
-        let line = read_request_line(&mut reader).expect("should find the request line");
+        let line =
+            read_request_line(&mut reader, test_deadline()).expect("should find the request line");
         assert!(
             line.starts_with("GET /login?code=testcode123"),
             "got: {line:?}"
@@ -789,7 +759,8 @@ mod test {
     fn request_line_is_length_capped() {
         let flood = "x".repeat((MAX_REQUEST_LINE_BYTES as usize) * 2);
         let mut reader = Cursor::new(flood.into_bytes());
-        let line = read_request_line(&mut reader).expect("capped read still yields a line");
+        let line = read_request_line(&mut reader, test_deadline())
+            .expect("capped read still yields a line");
         assert_eq!(line.len(), MAX_REQUEST_LINE_BYTES as usize);
     }
 
@@ -827,63 +798,6 @@ mod test {
         })
         .expect("should recover the code");
         assert_eq!(code.secret(), "testcode123");
-    }
-
-    /// A callback pipelined behind noise on ONE connection must still be found.
-    #[test]
-    fn pipelined_callback_behind_noise_on_same_connection() {
-        let code = run_listener(|addr| {
-            let request =
-                format!("GET /favicon.ico HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n{CODE_REQUEST}");
-            let _stream = send(addr, request.as_bytes());
-        })
-        .expect("should recover the pipelined code");
-        assert_eq!(code.secret(), "testcode123");
-    }
-
-    /// The same, but with the header block a real browser actually sends. Header
-    /// lines have to be stepped over as headers; read as request lines they each
-    /// draw a 400 and burn the per-connection budget before the callback behind
-    /// them is ever reached.
-    #[test]
-    fn pipelined_callback_behind_a_realistic_header_block() {
-        let code = run_listener(|addr| {
-            let noise = "GET /favicon.ico HTTP/1.1\r\n\
-                 Host: 127.0.0.1:8989\r\n\
-                 User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Firefox/149.0\r\n\
-                 Accept: image/avif,image/webp,*/*\r\n\
-                 Accept-Language: en-US,en;q=0.5\r\n\
-                 Accept-Encoding: gzip, deflate, br\r\n\
-                 Connection: keep-alive\r\n\
-                 Sec-Fetch-Dest: image\r\n\
-                 Sec-Fetch-Mode: no-cors\r\n\
-                 Sec-Fetch-Site: same-origin\r\n\
-                 Pragma: no-cache\r\n\
-                 Cache-Control: no-cache\r\n\
-                 \r\n";
-            let _stream = send(addr, format!("{noise}{CODE_REQUEST}").as_bytes());
-        })
-        .expect("headers must not be mistaken for requests");
-        assert_eq!(code.secret(), "testcode123");
-    }
-
-    #[test]
-    fn consume_headers_stops_at_the_blank_line() {
-        let mut reader = Cursor::new(
-            format!("Host: 127.0.0.1\r\nAccept: */*\r\n\r\n{CODE_REQUEST}").into_bytes(),
-        );
-        assert!(consume_headers(&mut reader));
-        let next = read_request_line(&mut reader).expect("request line after the header block");
-        assert!(
-            next.starts_with("GET /login?code=testcode123"),
-            "got: {next:?}"
-        );
-    }
-
-    #[test]
-    fn consume_headers_reports_a_truncated_request() {
-        let mut reader = Cursor::new(b"Host: 127.0.0.1\r\n".to_vec());
-        assert!(!consume_headers(&mut reader));
     }
 
     /// A browser that hangs up before reading the success page has still handed
