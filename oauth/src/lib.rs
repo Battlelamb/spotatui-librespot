@@ -24,7 +24,7 @@ use oauth2::{
     StandardTokenResponse, TokenResponse, TokenUrl, basic::BasicClient, basic::BasicTokenType,
 };
 
-use log::{error, info, trace};
+use log::{debug, error, info, trace, warn};
 use thiserror::Error;
 use url::Url;
 
@@ -166,6 +166,45 @@ fn get_authcode_stdin() -> Result<AuthorizationCode, OAuthError> {
     get_code(buffer.trim())
 }
 
+/// How long to wait for a request line before giving up on a connection and
+/// listening for the next one, so a browser that opens a socket without ever
+/// writing to it cannot park the login forever.
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How many blank lines to read past on a single connection, and how many
+/// unusable connections to tolerate overall. Both exist only so a misbehaving
+/// client cannot keep the server alive indefinitely.
+const MAX_BLANK_LINES: usize = 8;
+const MAX_SKIPPED_REQUESTS: usize = 64;
+
+/// Read the request line from `reader`, skipping any blank lines that precede it.
+///
+/// Returns `None` when the peer closed the connection, timed out, or sent nothing
+/// but blank lines.
+///
+/// The blank lines are skipped *within* a connection, not by moving on to the
+/// next one. RFC 9112 section 2.2 requires a server to tolerate a CRLF received
+/// before the request line, and at least some browsers send one, so the blank
+/// line and the request that carries the code can arrive on the same connection.
+/// Abandoning the connection on a blank line would discard the code and then
+/// block forever waiting for a redirect that has already been delivered.
+fn read_request_line(reader: &mut impl BufRead) -> Option<String> {
+    for _ in 0..MAX_BLANK_LINES {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            // Connection closed without sending a request.
+            Ok(0) => return None,
+            Ok(_) if line.trim().is_empty() => continue,
+            Ok(_) => return Some(line),
+            Err(e) => {
+                debug!("OAuth callback read error, moving to the next connection: {e}");
+                return None;
+            }
+        }
+    }
+    None
+}
+
 /// Spawn HTTP server at provided socket address to accept OAuth callback and return auth code.
 fn get_authcode_listener(
     socket_address: SocketAddr,
@@ -178,39 +217,81 @@ fn get_authcode_listener(
         })?;
     info!("OAuth server listening on {socket_address:?}");
 
-    // The server will terminate itself after collecting the first code.
+    accept_authcode(&listener, message)
+}
+
+/// Accept connections until one carries the authorization code.
+///
+/// Anything a browser may send before the redirect is skipped rather than
+/// mistaken for the callback: a bare CRLF, a connection opened and closed without
+/// a request, or an unrelated request such as `/favicon.ico`. Treating any of
+/// those as the callback returns an error, which drops the listener and closes
+/// the port, so the redirect that actually carries the code arrives at a dead
+/// port and the user is stranded on a browser "unable to connect" page with no
+/// way to recover. See librespot-org/librespot#1705.
+///
+/// Split out from `get_authcode_listener` so tests can supply a listener bound to
+/// port 0 rather than racing for a fixed port.
+fn accept_authcode(
+    listener: &TcpListener,
+    message: String,
+) -> Result<AuthorizationCode, OAuthError> {
+    let mut skipped = 0usize;
+
     for incoming in listener.incoming() {
-        let mut stream = match incoming {
-            Ok(stream) => stream,
-            Err(_) => continue,
-        };
-
-        let mut reader = BufReader::new(&stream);
-        let mut request_line = String::new();
-        reader
-            .read_line(&mut request_line)
-            .map_err(|_| OAuthError::AuthCodeListenerRead)?;
-
-        if request_line.trim().is_empty() {
-            continue; // Skip empty lines
+        if skipped >= MAX_SKIPPED_REQUESTS {
+            warn!("OAuth callback: too many unusable requests, giving up");
+            return Err(OAuthError::AuthCodeListenerTerminated);
         }
 
-        let redirect_url = request_line
-            .split_whitespace()
-            .nth(1)
-            .ok_or(OAuthError::AuthCodeListenerParse)?;
-        let code = get_code(&("http://localhost".to_string() + redirect_url));
+        let mut stream = match incoming {
+            Ok(stream) => stream,
+            Err(e) => {
+                debug!("OAuth callback accept error, still listening: {e}");
+                skipped += 1;
+                continue;
+            }
+        };
+        // Bounded so a connection that never sends a request line cannot block
+        // the login; the real redirect waits in the accept backlog meanwhile.
+        let _ = stream.set_read_timeout(Some(REQUEST_READ_TIMEOUT));
 
-        let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{}",
-            message.len(),
-            message
-        );
-        stream
-            .write_all(response.as_bytes())
-            .map_err(|_| OAuthError::AuthCodeListenerWrite)?;
-        return code;
+        let mut reader = BufReader::new(&stream);
+        let Some(request_line) = read_request_line(&mut reader) else {
+            debug!("OAuth callback: no request line, still listening");
+            skipped += 1;
+            continue;
+        };
+
+        let Some(redirect_url) = request_line.split_whitespace().nth(1) else {
+            debug!("OAuth callback: unparseable request line, still listening");
+            skipped += 1;
+            continue;
+        };
+
+        match get_code(&("http://localhost".to_string() + redirect_url)) {
+            Ok(code) => {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{}",
+                    message.len(),
+                    message
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .map_err(|_| OAuthError::AuthCodeListenerWrite)?;
+
+                return Ok(code);
+            }
+            // Browser noise (`/favicon.ico`, `/`, a pre-flight). Answer it so the
+            // browser is not left hanging, then keep waiting for the redirect.
+            Err(e) => {
+                debug!("OAuth callback: request carried no code ({e}), still listening");
+                let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n");
+                skipped += 1;
+            }
+        }
     }
+
     Err(OAuthError::AuthCodeListenerTerminated)
 }
 
@@ -519,9 +600,103 @@ pub fn get_access_token(
 
 #[cfg(test)]
 mod test {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    use std::io::Cursor;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 
     use super::*;
+
+    const CODE_REQUEST: &str = "GET /login?code=testcode123 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+
+    /// Drive `accept_authcode` against a listener on port 0 while `client` talks
+    /// to it, and return whatever the server resolved.
+    fn run_listener(
+        client: impl FnOnce(SocketAddr) + Send + 'static,
+    ) -> Result<AuthorizationCode, OAuthError> {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = std::thread::spawn(move || client(addr));
+        let result = accept_authcode(&listener, "done".to_string());
+        handle.join().expect("client thread panicked");
+        result
+    }
+
+    fn send(addr: SocketAddr, bytes: &[u8]) -> TcpStream {
+        let mut stream = TcpStream::connect(addr).expect("connect");
+        stream.write_all(bytes).expect("write");
+        stream.flush().expect("flush");
+        stream
+    }
+
+    #[test]
+    fn request_line_read_past_leading_blank_lines() {
+        let mut reader = Cursor::new(format!("\r\n\r\n{CODE_REQUEST}").into_bytes());
+        let line = read_request_line(&mut reader).expect("should find the request line");
+        assert!(
+            line.starts_with("GET /login?code=testcode123"),
+            "got: {line:?}"
+        );
+    }
+
+    #[test]
+    fn request_line_none_when_peer_sends_nothing() {
+        let mut reader = Cursor::new(Vec::new());
+        assert!(read_request_line(&mut reader).is_none());
+    }
+
+    #[test]
+    fn request_line_none_when_only_blank_lines() {
+        let mut reader = Cursor::new("\r\n".repeat(MAX_BLANK_LINES + 4).into_bytes());
+        assert!(read_request_line(&mut reader).is_none());
+    }
+
+    /// The librespot#1705 case as a *leading CRLF on the same connection*.
+    /// Skipping to the next connection here would discard the code and hang.
+    #[test]
+    fn blank_line_before_code_on_same_connection() {
+        let code = run_listener(|addr| {
+            let _stream = send(addr, format!("\r\n{CODE_REQUEST}").as_bytes());
+        })
+        .expect("should recover the code");
+        assert_eq!(code.secret(), "testcode123");
+    }
+
+    /// The librespot#1705 case as a *separate, dataless connection*.
+    #[test]
+    fn blank_connection_before_code_on_next_connection() {
+        let code = run_listener(|addr| {
+            drop(TcpStream::connect(addr).expect("connect"));
+            let _stream = send(addr, CODE_REQUEST.as_bytes());
+        })
+        .expect("should recover the code");
+        assert_eq!(code.secret(), "testcode123");
+    }
+
+    /// A parseable request that simply is not the callback must not end the flow.
+    #[test]
+    fn favicon_request_before_code_is_skipped() {
+        let code = run_listener(|addr| {
+            let _noise = send(
+                addr,
+                b"GET /favicon.ico HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            );
+            let _stream = send(addr, CODE_REQUEST.as_bytes());
+        })
+        .expect("should recover the code");
+        assert_eq!(code.secret(), "testcode123");
+    }
+
+    #[test]
+    fn gives_up_after_too_many_unusable_requests() {
+        let result = run_listener(|addr| {
+            for _ in 0..(MAX_SKIPPED_REQUESTS + 1) {
+                drop(TcpStream::connect(addr).expect("connect"));
+            }
+        });
+        assert!(matches!(
+            result,
+            Err(OAuthError::AuthCodeListenerTerminated)
+        ));
+    }
 
     #[test]
     fn get_socket_address_none() {
