@@ -229,8 +229,9 @@ impl<R: Read> Read for DeadlineReader<R> {
 /// Abandoning the connection on a blank line would discard the code and then
 /// block forever waiting for a redirect that has already been delivered.
 ///
-/// Time is bounded by the caller wrapping `reader` in a [`DeadlineReader`], so
-/// no sequence of reads here can outlive the login deadline.
+/// Time is bounded by the caller wrapping `reader` in a [`DeadlineReader`]: no
+/// new read starts once the login deadline has passed, so the overshoot is at
+/// most one already-running read, capped by the socket read timeout.
 fn read_request_line(reader: &mut impl BufRead) -> Option<String> {
     // MAX_BLANK_LINES blanks plus the request line that follows them.
     for _ in 0..=MAX_BLANK_LINES {
@@ -348,8 +349,9 @@ fn accept_authcode(
         // this function exists to avoid. Nothing is given up by not doing it:
         // browsers do not pipeline, and the 400 below closes the connection, so
         // a browser with more to say opens a new one and we accept that instead.
-        // The socket timeout bounds one recv; the DeadlineReader bounds the whole
-        // read, so a peer dribbling bytes cannot win back the timeout per byte.
+        // The socket timeout bounds one recv; the DeadlineReader stops new reads
+        // past the deadline, so a peer dribbling bytes cannot win the timeout
+        // back on every byte and stretch one read_line far beyond the budget.
         let mut reader = BufReader::new(DeadlineReader {
             inner: &stream,
             deadline,
