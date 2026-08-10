@@ -4,11 +4,19 @@ use std::{collections::HashMap, process::Command, thread};
 
 use librespot::{
     metadata::audio::UniqueFields,
-    playback::player::{PlayerEvent, PlayerEventChannel, SinkStatus},
+    playback::player::{PlayerEvent, PlayerEventChannel, SessionDisconnectReason, SinkStatus},
 };
 
 pub struct EventHandler {
     thread_handle: Option<thread::JoinHandle<()>>,
+}
+
+fn disconnect_reason_value(reason: SessionDisconnectReason) -> &'static str {
+    match reason {
+        SessionDisconnectReason::ExternalDeviceHandoff => "external_device_handoff",
+        SessionDisconnectReason::UnexpectedShutdown => "unexpected_shutdown",
+        SessionDisconnectReason::LocalCommand => "local_command",
+    }
 }
 
 impl EventHandler {
@@ -255,10 +263,15 @@ impl EventHandler {
                             PlayerEvent::SessionDisconnected {
                                 connection_id,
                                 user_name,
+                                reason,
                             } => {
                                 env_vars.insert("PLAYER_EVENT", "session_disconnected".to_string());
                                 env_vars.insert("CONNECTION_ID", connection_id);
                                 env_vars.insert("USER_NAME", user_name);
+                                env_vars.insert(
+                                    "DISCONNECT_REASON",
+                                    disconnect_reason_value(reason).to_string(),
+                                );
                             }
                             PlayerEvent::SessionClientChanged {
                                 client_id,
@@ -359,5 +372,26 @@ fn run_program(env_vars: HashMap<&str, String>, onevent: &str) {
                 }
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disconnect_reason_values_are_stable() {
+        assert_eq!(
+            disconnect_reason_value(SessionDisconnectReason::ExternalDeviceHandoff),
+            "external_device_handoff"
+        );
+        assert_eq!(
+            disconnect_reason_value(SessionDisconnectReason::UnexpectedShutdown),
+            "unexpected_shutdown"
+        );
+        assert_eq!(
+            disconnect_reason_value(SessionDisconnectReason::LocalCommand),
+            "local_command"
+        );
     }
 }
