@@ -14,7 +14,7 @@ use crate::{
     model::{LoadRequest, PlayingTrack, SavedPlaybackState, SpircPlayStatus},
     playback::{
         mixer::Mixer,
-        player::{Player, PlayerEvent, PlayerEventChannel},
+        player::{Player, PlayerEvent, PlayerEventChannel, SessionDisconnectReason},
     },
     protocol::{
         connect::{Cluster, ClusterUpdate, LogoutCommand, SetVolumeCommand},
@@ -628,7 +628,10 @@ impl SpircTask {
 
         if !self.shutdown && self.connect_state.is_active() {
             warn!("unexpected shutdown");
-            if let Err(why) = self.handle_disconnect().await {
+            if let Err(why) = self
+                .handle_disconnect(SessionDisconnectReason::UnexpectedShutdown)
+                .await
+            {
                 error!("error during disconnecting: {why}")
             }
         }
@@ -698,7 +701,8 @@ impl SpircTask {
             SpircCommand::Shutdown => {
                 trace!("Received SpircCommand::Shutdown");
                 self.handle_pause();
-                self.handle_disconnect().await?;
+                self.handle_disconnect(SessionDisconnectReason::LocalCommand)
+                    .await?;
                 self.shutdown = true;
                 if let Some(rx) = self.commands.as_mut() {
                     rx.close()
@@ -727,7 +731,9 @@ impl SpircTask {
                 if pause {
                     self.handle_pause()
                 }
-                return self.handle_disconnect().await;
+                return self
+                    .handle_disconnect(SessionDisconnectReason::LocalCommand)
+                    .await;
             }
             SpircCommand::Play => self.handle_play(),
             SpircCommand::PlayPause => self.handle_play_pause(),
@@ -1011,7 +1017,8 @@ impl SpircTask {
                 && cluster.active_device_id != self.session.device_id();
             if became_inactive {
                 info!("device became inactive");
-                self.handle_disconnect().await?;
+                self.handle_disconnect(SessionDisconnectReason::ExternalDeviceHandoff)
+                    .await?;
                 self.handle_stop();
             } else if self.connect_state.is_active() {
                 // fixme: workaround fix, because of missing information why it behaves like it does
@@ -1291,20 +1298,31 @@ impl SpircTask {
         self.load_track(is_playing, position.try_into()?)
     }
 
-    async fn handle_disconnect(&mut self) -> Result<(), Error> {
+    async fn handle_disconnect(&mut self, reason: SessionDisconnectReason) -> Result<(), Error> {
         self.context_resolver.clear();
 
         self.play_status = SpircPlayStatus::Stopped {};
         self.connect_state
             .update_position_in_relation(self.now_ms());
-        self.notify().await?;
 
-        self.connect_state.became_inactive(&self.session).await?;
+        // Preserve the existing cleanup ordering, but report the reason even
+        // when a simultaneous network loss makes remote cleanup fail.
+        let cleanup_result = match self.notify().await {
+            Ok(()) => self
+                .connect_state
+                .became_inactive(&self.session)
+                .await
+                .map(|_| ()),
+            Err(why) => Err(why),
+        };
 
-        self.player
-            .emit_session_disconnected_event(self.session.connection_id(), self.session.username());
+        self.player.emit_session_disconnected_event(
+            self.session.connection_id(),
+            self.session.username(),
+            reason,
+        );
 
-        Ok(())
+        cleanup_result
     }
 
     fn handle_stop(&mut self) {

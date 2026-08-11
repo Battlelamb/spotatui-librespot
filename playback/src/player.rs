@@ -120,6 +120,7 @@ enum PlayerCommand {
     EmitSessionDisconnectedEvent {
         connection_id: String,
         user_name: String,
+        reason: SessionDisconnectReason,
     },
     EmitSessionConnectedEvent {
         connection_id: String,
@@ -138,6 +139,13 @@ enum PlayerCommand {
         track: bool,
     },
     EmitAutoPlayChangedEvent(bool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionDisconnectReason {
+    ExternalDeviceHandoff,
+    UnexpectedShutdown,
+    LocalCommand,
 }
 
 #[derive(Debug, Clone)]
@@ -228,6 +236,7 @@ pub enum PlayerEvent {
     SessionDisconnected {
         connection_id: String,
         user_name: String,
+        reason: SessionDisconnectReason,
     },
     SessionClientChanged {
         client_id: String,
@@ -614,10 +623,16 @@ impl Player {
         });
     }
 
-    pub fn emit_session_disconnected_event(&self, connection_id: String, user_name: String) {
+    pub fn emit_session_disconnected_event(
+        &self,
+        connection_id: String,
+        user_name: String,
+        reason: SessionDisconnectReason,
+    ) {
         self.command(PlayerCommand::EmitSessionDisconnectedEvent {
             connection_id,
             user_name,
+            reason,
         });
     }
 
@@ -2329,9 +2344,11 @@ impl PlayerInternal {
             PlayerCommand::EmitSessionDisconnectedEvent {
                 connection_id,
                 user_name,
+                reason,
             } => self.send_event(PlayerEvent::SessionDisconnected {
                 connection_id,
                 user_name,
+                reason,
             }),
 
             PlayerCommand::SetAutoNormaliseAsAlbum(setting) => {
@@ -2509,10 +2526,12 @@ impl fmt::Debug for PlayerCommand {
             PlayerCommand::EmitSessionDisconnectedEvent {
                 connection_id,
                 user_name,
+                reason,
             } => f
                 .debug_tuple("EmitSessionDisconnectedEvent")
                 .field(&connection_id)
                 .field(&user_name)
+                .field(&reason)
                 .finish(),
             PlayerCommand::EmitSessionClientChangedEvent {
                 client_id,
