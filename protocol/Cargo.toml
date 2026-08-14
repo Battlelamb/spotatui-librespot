@@ -1,10 +1,10 @@
 [package]
-name = "librespot-protocol"
-version = "0.8.0"
+name = "spotatui-librespot-protocol"
+version = "0.8.1"
 rust-version.workspace = true
 authors = ["Paul Liétar <paul@lietar.net>"]
 license.workspace = true
-description = "The protobuf logic for communicating with Spotify servers"
+description = "The protobuf logic for communicating with Spotify servers (spotatui's maintained fork)"
 repository.workspace = true
 edition.workspace = true
 build = "build.rs"

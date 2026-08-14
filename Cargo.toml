@@ -10,6 +10,7 @@ categories = ["multimedia::audio"]
 repository.workspace = true
 readme = "README.md"
 edition.workspace = true
+publish = false
 include = [
     "src/**/*",
     "audio/**/*",
@@ -32,7 +33,7 @@ include = [
 rust-version = "1.85"
 authors = ["Librespot Org"]
 license = "MIT"
-repository = "https://github.com/librespot-org/librespot"
+repository = "https://github.com/LargeModGames/spotatui-librespot"
 edition = "2024"
 
 [features]
@@ -142,14 +143,14 @@ path = "src/main.rs"
 doc = false
 
 [workspace.dependencies]
-librespot-audio = { version = "0.8.0", path = "audio", default-features = false }
-librespot-connect = { version = "0.8.0", path = "connect", default-features = false }
-librespot-core = { version = "0.8.0", path = "core", default-features = false }
+librespot-audio = { version = "0.8.1", path = "audio", package = "spotatui-librespot-audio", default-features = false }
+librespot-connect = { version = "0.8.1", path = "connect", package = "spotatui-librespot-connect", default-features = false }
+librespot-core = { version = "0.8.1", path = "core", package = "spotatui-librespot-core", default-features = false }
 librespot-discovery = { version = "0.8.0", path = "discovery", default-features = false }
-librespot-metadata = { version = "0.8.0", path = "metadata", default-features = false }
-librespot-oauth = { version = "0.8.0", path = "oauth", default-features = false }
-librespot-playback = { version = "0.8.0", path = "playback", default-features = false }
-librespot-protocol = { version = "0.8.0", path = "protocol", default-features = false }
+librespot-metadata = { version = "0.8.1", path = "metadata", package = "spotatui-librespot-metadata", default-features = false }
+librespot-oauth = { version = "0.8.1", path = "oauth", package = "spotatui-librespot-oauth", default-features = false }
+librespot-playback = { version = "0.8.1", path = "playback", package = "spotatui-librespot-playback", default-features = false }
+librespot-protocol = { version = "0.8.1", path = "protocol", package = "spotatui-librespot-protocol", default-features = false }
 
 [dependencies]
 librespot-audio.workspace = true

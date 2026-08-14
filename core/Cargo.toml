@@ -1,10 +1,10 @@
 [package]
-name = "librespot-core"
-version = "0.8.0"
+name = "spotatui-librespot-core"
+version = "0.8.1"
 rust-version.workspace = true
 authors = ["Paul Lietar <paul@lietar.net>"]
 license.workspace = true
-description = "The core functionality provided by librespot"
+description = "The core functionality provided by librespot (spotatui's maintained fork)"
 repository.workspace = true
 edition.workspace = true
 build = "build.rs"
@@ -40,8 +40,8 @@ rustls-tls-webpki-roots = [
 __rustls = []
 
 [dependencies]
-librespot-oauth = { version = "0.8.0", path = "../oauth", default-features = false }
-librespot-protocol = { version = "0.8.0", path = "../protocol", default-features = false }
+librespot-oauth = { version = "0.8.1", path = "../oauth", package = "spotatui-librespot-oauth", default-features = false }
+librespot-protocol = { version = "0.8.1", path = "../protocol", package = "spotatui-librespot-protocol", default-features = false }
 
 aes = "0.8"
 base64 = "0.22"

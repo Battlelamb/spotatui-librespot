@@ -1,10 +1,10 @@
 [package]
-name = "librespot-oauth"
-version = "0.8.0"
+name = "spotatui-librespot-oauth"
+version = "0.8.1"
 rust-version.workspace = true
 authors = ["Nick Steel <nick@nsteel.co.uk>"]
 license.workspace = true
-description = "OAuth authorization code flow with PKCE for obtaining a Spotify access token"
+description = "OAuth authorization code flow with PKCE for obtaining a Spotify access token (spotatui's maintained fork)"
 repository.workspace = true
 edition.workspace = true
 

@@ -5,10 +5,25 @@ maintained for [spotatui](https://github.com/LargeModGames/spotatui) because ups
 slow to merge and release fixes (the `dev` branch had no commits between 2026-02-09 and at
 least mid-2026, while Spotify keeps changing audio delivery).
 
+## Published crates
+
+The seven library crates are published on crates.io under fork names, versioned in
+lockstep, starting at **0.8.1** (= upstream v0.8.0 + the patches below):
+
+`spotatui-librespot-{core, connect, playback, audio, metadata, protocol, oauth}`
+
+Consumers depend on them with Cargo's `package =` rename so imports stay `librespot_*`:
+
+```toml
+librespot-core = { package = "spotatui-librespot-core", version = "=0.8.1" }
+```
+
+The root `librespot` binary crate and `librespot-discovery` are `publish = false`;
+spotatui does not use them.
+
 ## Branch `spotatui`
 
-Based on the upstream **v0.8.0** tag plus the patches spotatui needs. spotatui pins this
-branch via `[patch.crates-io]` in its `Cargo.toml`; its `Cargo.lock` pins the exact commit.
+The publishing branch: upstream **v0.8.0** plus the patches spotatui needs.
 
 ## Carried patches
 
@@ -17,6 +32,16 @@ branch via `[patch.crates-io]` in its `Cargo.toml`; its `Cargo.lock` pins the ex
   response falls through to the next URL instead of failing the track. Spotify serves HTTP
   530 from some CDN nodes while other URLs from the same `storage-resolve` work; without
   this, native playback is silent.
+- **Dealer reconnect / session-loss recovery** (port of upstream PR #1692): reconnect the
+  dealer WebSocket and recover the session without interrupting playback.
+- **OAuth callback listener hardening** (fork-only): keep the login callback listener
+  alive through browser noise (empty lines, header blocks, connection reuse), handle one
+  request per connection, and bound the deadline at the read layer so a captured code is
+  never discarded.
+- **Session disconnect reason** (fork-only API): `connect` reports why a session ended
+  (external device handoff vs. unexpected loss vs. local stop) so spotatui can classify
+  teardowns instead of inferring them. spotatui depends on this API; the fork cannot be
+  swapped for upstream 0.8.
 
 ## Upstream status
 
@@ -25,6 +50,9 @@ branch via `[patch.crates-io]` in its `Cargo.toml`; its `Cargo.lock` pins the ex
 
 ## Maintenance
 
-When upstream ships a release containing these fixes, drop the `[patch]` in spotatui and
-bump the crates.io librespot version. Until then, rebase this branch onto each new librespot
-release and update spotatui's pin.
+The fork is maintained standalone: cherry-pick what spotatui needs from upstream onto the
+`spotatui` branch, bump all seven crate versions in lockstep, and republish with
+`cargo publish --workspace` (order is resolved automatically; the dirty-tree check means
+you publish from a committed tree). Then bump the `=`-pinned versions in spotatui's
+`Cargo.toml`. Fork-only API additions (like the disconnect reason) mean upstream releases
+can no longer be dropped in as-is.
