@@ -42,6 +42,13 @@ The publishing branch: upstream **v0.8.0** plus the patches spotatui needs.
   (external device handoff vs. unexpected loss vs. local stop) so spotatui can classify
   teardowns instead of inferring them. spotatui depends on this API; the fork cannot be
   swapped for upstream 0.8.
+- **Previous on the first track restarts it** (fork-only, 0.8.2): upstream's
+  `handle_prev` stops playback when there is no previous track, stranding the player in
+  `Stopped` (which `handle_play` cannot leave). Spotify's own clients restart the first
+  track; the fork does the same. spotatui #366.
+- **Play status follows `PlayerEvent::Seeked`** (fork-only, 0.8.2): seeks issued directly
+  on the `Player` (spotatui does this) now update spirc's play status, so its position and
+  the previous-track 3-second rule stay accurate.
 
 ## Upstream status
 

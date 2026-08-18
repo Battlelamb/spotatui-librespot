@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [audio] Fall back to the next CDN URL when a fetch returns a non-206 status (e.g. HTTP 530) instead of failing the track. Backport of upstream PR [#1722](https://github.com/librespot-org/librespot/pull/1722) for the spotatui fork.
 - [core] Fix dealer websocket reconnect leaving spirc hung on stale subscription channels. Port of upstream PR [#1692](https://github.com/librespot-org/librespot/pull/1692) for the spotatui fork.
 - [connect] Handle dealer reconnects in place without restarting spirc, and save/restore playback state across session loss (`Spirc::with_saved_state`). Part of the [#1692](https://github.com/librespot-org/librespot/pull/1692) port.
+- [connect] Skipping to the previous track from the first track of a context (under the 3-second mark) restarts that track instead of stopping playback, which left the player in a `Stopped` state that `play` could not leave. Fork-only; fixes spotatui [#366](https://github.com/LargeModGames/spotatui/issues/366).
+- [connect] Keep spirc's play status in sync with `PlayerEvent::Seeked`, so a seek issued directly on the `Player` no longer leaves `Spirc` reporting the pre-seek position (and misapplying the previous-track 3-second rule) until the next Playing/Paused event. Fork-only.
 
 ## [0.8.0] - 2025-11-10
 

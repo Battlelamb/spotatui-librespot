@@ -806,8 +806,31 @@ impl SpircTask {
             },
             PlayerEvent::Seeked { position_ms, .. } => {
                 trace!("==> Seeked");
-                self.connect_state
-                    .update_position(position_ms, self.now_ms())
+                let now = self.now_ms();
+                self.connect_state.update_position(position_ms, now);
+                // spotatui fork: a seek issued directly on the player (not via
+                // `handle_seek`) never touched `play_status`, so `position()`
+                // kept reporting the pre-seek position until the next
+                // Playing/Paused event. That skews everything derived from it,
+                // notably the 3-second rule in `handle_prev`. Mirror what
+                // `handle_seek` does with the position the player confirmed.
+                match self.play_status {
+                    SpircPlayStatus::Stopped => (),
+                    SpircPlayStatus::LoadingPause {
+                        position_ms: ref mut position,
+                    }
+                    | SpircPlayStatus::LoadingPlay {
+                        position_ms: ref mut position,
+                    }
+                    | SpircPlayStatus::Paused {
+                        position_ms: ref mut position,
+                        ..
+                    } => *position = position_ms,
+                    SpircPlayStatus::Playing {
+                        ref mut nominal_start_time,
+                        ..
+                    } => *nominal_start_time = now - position_ms as i64,
+                }
             }
             PlayerEvent::Playing { position_ms, .. }
             | PlayerEvent::PositionCorrection { position_ms, .. } => {
@@ -1740,14 +1763,20 @@ impl SpircTask {
         // Under 3s it goes to the previous song (starts playing)
         // Over 3s it seeks to zero (retains previous play status)
         if self.position() < 3000 {
-            let repeat_context = self.connect_state.repeat_context();
             match self.connect_state.prev_track()? {
-                None if repeat_context => self.connect_state.reset_playback_to_position(None)?,
+                Some(_) => self.load_track(self.connect_state.is_playing(), 0)?,
+                // spotatui fork: nothing before the first track. Upstream stops
+                // playback here (and merely resets the state under repeat
+                // context), which strands the player in `Stopped`, a state
+                // `handle_play` cannot leave without a fresh load. Spotify's
+                // own clients restart the first track instead, so do the same:
+                // reset the state to the context start and load it. Loading
+                // the track that is already playing is a seek inside the
+                // player, so the audio pipeline stays up.
                 None => {
                     self.connect_state.reset_playback_to_position(None)?;
-                    self.handle_stop()
+                    self.load_track(self.connect_state.is_playing(), 0)?
                 }
-                Some(_) => self.load_track(self.connect_state.is_playing(), 0)?,
             }
         } else {
             self.handle_seek(0);
