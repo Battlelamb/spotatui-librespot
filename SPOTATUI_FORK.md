@@ -49,6 +49,13 @@ The publishing branch: upstream **v0.8.0** plus the patches spotatui needs.
 - **Play status follows `PlayerEvent::Seeked`** (fork-only, 0.8.2): seeks issued directly
   on the `Player` (spotatui does this) now update spirc's play status, so its position and
   the previous-track 3-second rule stay accurate.
+- **`Player::load` returns its play request id, Spirc keeps its own** (fork-only API,
+  0.8.3): upstream Spirc learned its play request id from the `PlayRequestIdChanged`
+  event, so it adopted every load an embedder sent straight to the `Player`. At that
+  track's end it ran `handle_next` against a context it never loaded and stopped the
+  player, silencing the embedder's next load (spotatui's native queue slot). Now `load`
+  hands the id back and Spirc records only the loads it issues. spotatui ignores the
+  return value but depends on the filter.
 
 ## Upstream status
 

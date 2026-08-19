@@ -760,9 +760,14 @@ impl SpircTask {
             return Ok(());
         }
 
-        // update play_request_id
-        if let PlayerEvent::PlayRequestIdChanged { play_request_id } = event {
-            self.play_request_id = Some(play_request_id);
+        // spotatui fork: `load_track` records the id `Player::load` returns, so
+        // this event is either an echo of a load we already know about or the
+        // announcement of one an embedder issued directly on the `Player`.
+        // Adopting the second kind made Spirc treat foreign playback as its own:
+        // at that track's `EndOfTrack` it ran `handle_next`, found no next track
+        // in a context it never loaded, and stopped the player, which silenced
+        // whatever the embedder had started in the meantime. Keep our own id.
+        if matches!(event, PlayerEvent::PlayRequestIdChanged { .. }) {
             return Ok(());
         }
 
@@ -1899,7 +1904,10 @@ impl SpircTask {
 
         let current_uri = self.connect_state.current_track(|t| &t.uri);
         let id = SpotifyUri::from_uri(current_uri)?;
-        self.player.load(id, start_playing, position_ms);
+        // spotatui fork: record the id of the request we just issued, so the
+        // event filter in `handle_player_event` can tell our own playback from
+        // a load an embedder sent straight to the `Player`.
+        self.play_request_id = Some(self.player.load(id, start_playing, position_ms));
 
         self.connect_state
             .update_position(position_ms, self.now_ms());

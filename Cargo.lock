@@ -3294,7 +3294,7 @@ dependencies = [
 
 [[package]]
 name = "spotatui-librespot-audio"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "aes",
  "bytes",
@@ -3312,7 +3312,7 @@ dependencies = [
 
 [[package]]
 name = "spotatui-librespot-connect"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "futures-util",
  "log",
@@ -3330,7 +3330,7 @@ dependencies = [
 
 [[package]]
 name = "spotatui-librespot-core"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "aes",
  "base64",
@@ -3386,7 +3386,7 @@ dependencies = [
 
 [[package]]
 name = "spotatui-librespot-metadata"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3402,7 +3402,7 @@ dependencies = [
 
 [[package]]
 name = "spotatui-librespot-oauth"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "env_logger",
  "log",
@@ -3416,7 +3416,7 @@ dependencies = [
 
 [[package]]
 name = "spotatui-librespot-playback"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "alsa 0.10.0",
  "cpal",
@@ -3448,7 +3448,7 @@ dependencies = [
 
 [[package]]
 name = "spotatui-librespot-protocol"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "protobuf",
  "protobuf-codegen",

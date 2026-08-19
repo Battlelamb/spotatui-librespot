@@ -52,11 +52,19 @@ const SPOTIFY_OGG_HEADER_END: u64 = 0xa7;
 
 const LOAD_HANDLES_POISON_MSG: &str = "load handles mutex should not be poisoned";
 
+const PLAY_REQUEST_IDS_POISON_MSG: &str = "play request id mutex should not be poisoned";
+
 pub type PlayerResult = Result<(), Error>;
 
 pub struct Player {
     commands: Option<mpsc::UnboundedSender<PlayerCommand>>,
     thread_handle: Option<thread::JoinHandle<()>>,
+    // spotatui fork: play request ids are handed out here, on the handle, so
+    // `load` can return the id it just assigned. Spirc must know which requests
+    // are its own at the moment it issues them. It used to learn that from the
+    // `PlayRequestIdChanged` event, which made it adopt every load an embedder
+    // sent straight to the `Player`, outside Connect. See `Player::load`.
+    play_request_ids: Mutex<SeqGenerator<u64>>,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
@@ -91,7 +99,6 @@ struct PlayerInternal {
     auto_normalise_as_album: bool,
 
     player_id: usize,
-    play_request_id_generator: SeqGenerator<u64>,
     last_progress_update: Instant,
 
     local_file_lookup: Arc<LocalFileLookup>,
@@ -102,6 +109,7 @@ static PLAYER_COUNTER: AtomicUsize = AtomicUsize::new(0);
 enum PlayerCommand {
     Load {
         track_id: SpotifyUri,
+        play_request_id: u64,
         play: bool,
         position_ms: u32,
     },
@@ -515,7 +523,6 @@ impl Player {
                 auto_normalise_as_album: false,
 
                 player_id,
-                play_request_id_generator: SeqGenerator::new(0),
                 last_progress_update: Instant::now(),
 
                 local_file_lookup: Arc::new(local_file_lookup),
@@ -532,6 +539,7 @@ impl Player {
         Arc::new(Self {
             commands: Some(cmd_tx),
             thread_handle: Some(handle),
+            play_request_ids: Mutex::new(SeqGenerator::new(0)),
         })
     }
 
@@ -550,12 +558,22 @@ impl Player {
         }
     }
 
-    pub fn load(&self, track_id: SpotifyUri, start_playing: bool, position_ms: u32) {
+    /// Load a track and return the play request id assigned to it. Every event
+    /// this load produces carries that id, so a caller that drives the `Player`
+    /// alongside Spirc can tell its own playback from Spirc's.
+    pub fn load(&self, track_id: SpotifyUri, start_playing: bool, position_ms: u32) -> u64 {
+        let play_request_id = self
+            .play_request_ids
+            .lock()
+            .expect(PLAY_REQUEST_IDS_POISON_MSG)
+            .get();
         self.command(PlayerCommand::Load {
             track_id,
+            play_request_id,
             play: start_playing,
             position_ms,
         });
+        play_request_id
     }
 
     pub fn preload(&self, track_id: SpotifyUri) {
@@ -1955,13 +1973,10 @@ impl PlayerInternal {
     fn handle_command_load(
         &mut self,
         track_id: SpotifyUri,
-        play_request_id_option: Option<u64>,
+        play_request_id: u64,
         play: bool,
         position_ms: u32,
     ) -> PlayerResult {
-        let play_request_id =
-            play_request_id_option.unwrap_or(self.play_request_id_generator.get());
-
         self.send_event(PlayerEvent::PlayRequestIdChanged { play_request_id });
 
         if !self.config.gapless {
@@ -2228,7 +2243,7 @@ impl PlayerInternal {
         {
             return self.handle_command_load(
                 track_id.clone(),
-                Some(play_request_id),
+                play_request_id,
                 start_playback,
                 position_ms,
             );
@@ -2285,9 +2300,10 @@ impl PlayerInternal {
         match cmd {
             PlayerCommand::Load {
                 track_id,
+                play_request_id,
                 play,
                 position_ms,
-            } => self.handle_command_load(track_id, None, play, position_ms)?,
+            } => self.handle_command_load(track_id, play_request_id, play, position_ms)?,
 
             PlayerCommand::Preload { track_id } => self.handle_command_preload(track_id),
 

@@ -66,7 +66,11 @@ impl Credentials {
         }
     }
 
-    #[expect(deprecated)]
+    // spotatui fork: `allow`, not `expect`. The deprecations this covers are
+    // the `GenericArray` uses in the decrypt block below, and rustc does not
+    // credit them to an `expect` on the enclosing function, so `expect`
+    // reported itself as unfulfilled on every path build of this crate.
+    #[allow(deprecated)]
     pub fn with_blob(
         username: impl Into<String>,
         encrypted_blob: impl AsRef<[u8]>,

@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [connect] Handle dealer reconnects in place without restarting spirc, and save/restore playback state across session loss (`Spirc::with_saved_state`). Part of the [#1692](https://github.com/librespot-org/librespot/pull/1692) port.
 - [connect] Skipping to the previous track from the first track of a context (under the 3-second mark) restarts that track instead of stopping playback, which left the player in a `Stopped` state that `play` could not leave. Fork-only; fixes spotatui [#366](https://github.com/LargeModGames/spotatui/issues/366).
 - [connect] Keep spirc's play status in sync with `PlayerEvent::Seeked`, so a seek issued directly on the `Player` no longer leaves `Spirc` reporting the pre-seek position (and misapplying the previous-track 3-second rule) until the next Playing/Paused event. Fork-only.
+- [playback] `Player::load` returns the play request id it assigned, so an embedder that drives the `Player` directly can tell its own playback events from Spirc's. The id generator moved from the player thread to the handle. Fork-only.
+- [connect] Spirc records the play request id of each load it issues and no longer adopts `PlayRequestIdChanged` events for loads it did not issue. Adopting them made Spirc treat an embedder's direct load as its own context: at that track's end it ran `handle_next`, found nothing, and stopped the player, silencing whatever the embedder had started since. Fork-only.
+- [core] `Credentials::with_blob` uses `#[allow(deprecated)]` instead of `#[expect]`, which reported itself unfulfilled on path builds. Fork-only.
 
 ## [0.8.0] - 2025-11-10
 
