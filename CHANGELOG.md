@@ -14,10 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [connect] Add method `clear_queue` to `Spirc` to remove all manually queued tracks
 - [playback] Add `SetQueue` player event, emitting when the queue changes (context loaded, track added to queue, or queue set via Spotify Connect). Gated behind `ConnectConfig::emit_set_queue_events`
 - [examples] Obtain an access token via OAuth to establish a new session and retrieve the stored credentials
+- [oauth] Add the device authorization flow (`DeviceAuthClient`), with a code entered at spotify.com/pair
+- [core] Add collection v2 methods to `SpClient`: `get_collection_page`, `get_collection_delta`, `write_collection` and `collection_contains` (liked songs, saved albums, followed artists, saved shows). Fork-only.
+- [core] Add `SpClient::post_playlist_changes` and `SpClient::post_rootlist_changes` to create, edit and (un)list playlists. They are sent once and never retried. Fork-only.
+- [core] Add `SpClient::send_player_command` and `SpClient::set_remote_volume` to control another Connect device. Fork-only.
+- [core] Add `SpClient::pathfinder_query` for persisted Pathfinder (GraphQL) queries such as `searchDesktop`. A stale hash fails with `ErrorKind::FailedPrecondition` (HTTP 412). Fork-only.
+- [protocol] Compile `collection2v2.proto` and add its `ContainsRequest` and `ContainsResponse` messages. Fork-only.
 
 ### Changed
 
 - [core] Made `SpotifyId::to_base62`, `SpotifyId::to_base16`, `FileId::to_base16`, `SpotifyUri::to_id`, `SpotifyUri::to_uri` infallible (breaking)
+- [core] A non-Premium account no longer exits the process: the session shuts down and the product info dispatch fails with the new `SessionError::NotPremium` (breaking). Fork-only.
 
 ### Fixed
 
