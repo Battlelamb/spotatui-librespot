@@ -147,6 +147,19 @@ enum PlayerCommand {
         track: bool,
     },
     EmitAutoPlayChangedEvent(bool),
+    EmitSetQueueEvent {
+        context_uri: String,
+        current_track: Option<QueueTrack>,
+        next_tracks: Vec<QueueTrack>,
+        prev_tracks: Vec<QueueTrack>,
+    },
+}
+
+/// Represents a track in the queue with its URI and provider.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueueTrack {
+    pub uri: String,
+    pub provider: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,6 +277,13 @@ pub enum PlayerEvent {
     },
     FilterExplicitContentChanged {
         filter: bool,
+    },
+    /// Fired when the queue is set or context is loaded with its track list.
+    SetQueue {
+        context_uri: String,
+        current_track: Option<QueueTrack>,
+        next_tracks: Vec<QueueTrack>,
+        prev_tracks: Vec<QueueTrack>,
     },
 }
 
@@ -680,6 +700,21 @@ impl Player {
     pub fn emit_auto_play_changed_event(&self, auto_play: bool) {
         self.command(PlayerCommand::EmitAutoPlayChangedEvent(auto_play));
     }
+
+    pub fn emit_set_queue_event(
+        &self,
+        context_uri: String,
+        current_track: Option<QueueTrack>,
+        next_tracks: Vec<QueueTrack>,
+        prev_tracks: Vec<QueueTrack>,
+    ) {
+        self.command(PlayerCommand::EmitSetQueueEvent {
+            context_uri,
+            current_track,
+            next_tracks,
+            prev_tracks,
+        });
+    }
 }
 
 impl Drop for Player {
@@ -1021,10 +1056,7 @@ impl PlayerTrackLoader {
             Ok(audio) => match self.find_available_alternative(audio).await {
                 Some(audio) => audio,
                 None => {
-                    warn!(
-                        "spotify:track:<{}> is not available",
-                        track_id.to_base62().unwrap_or_default()
-                    );
+                    warn!("spotify:track:<{}> is not available", track_id.to_base62());
                     return None;
                 }
             },
@@ -1323,7 +1355,7 @@ impl PlayerTrackLoader {
             is_explicit: false,
             audio_item: AudioItem {
                 duration_ms: duration.as_millis() as u32,
-                uri: track_uri.to_uri().unwrap_or_default(),
+                uri: track_uri.to_uri(),
                 track_id: track_uri,
                 files: Default::default(),
                 name,
@@ -2371,6 +2403,18 @@ impl PlayerInternal {
                 self.auto_normalise_as_album = setting
             }
 
+            PlayerCommand::EmitSetQueueEvent {
+                context_uri,
+                current_track,
+                next_tracks,
+                prev_tracks,
+            } => self.send_event(PlayerEvent::SetQueue {
+                context_uri,
+                current_track,
+                next_tracks,
+                prev_tracks,
+            }),
+
             PlayerCommand::EmitFilterExplicitContentChangedEvent(filter) => {
                 self.send_event(PlayerEvent::FilterExplicitContentChanged { filter });
 
@@ -2573,6 +2617,17 @@ impl fmt::Debug for PlayerCommand {
             PlayerCommand::EmitAutoPlayChangedEvent(auto_play) => f
                 .debug_tuple("EmitAutoPlayChangedEvent")
                 .field(&auto_play)
+                .finish(),
+            PlayerCommand::EmitSetQueueEvent {
+                context_uri,
+                next_tracks,
+                prev_tracks,
+                ..
+            } => f
+                .debug_tuple("EmitSetQueueEvent")
+                .field(&context_uri)
+                .field(&next_tracks.len())
+                .field(&prev_tracks.len())
                 .finish(),
         }
     }

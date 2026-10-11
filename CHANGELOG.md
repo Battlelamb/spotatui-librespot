@@ -10,10 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - [playback] Include a disconnect reason in `PlayerEvent::SessionDisconnected` so consumers can distinguish external device handoffs from local commands and unexpected shutdowns (breaking).
+- [connect] Add method `add_to_queue` to `Spirc` to add tracks, episodes, albums and playlists to the queue
+- [connect] Add method `clear_queue` to `Spirc` to remove all manually queued tracks
+- [playback] Add `SetQueue` player event, emitting when the queue changes (context loaded, track added to queue, or queue set via Spotify Connect). Gated behind `ConnectConfig::emit_set_queue_events`
+- [examples] Obtain an access token via OAuth to establish a new session and retrieve the stored credentials
+
+### Changed
+
+- [core] Made `SpotifyId::to_base62`, `SpotifyId::to_base16`, `FileId::to_base16`, `SpotifyUri::to_id`, `SpotifyUri::to_uri` infallible (breaking)
 
 ### Fixed
 
-- [audio] Fall back to the next CDN URL when a fetch returns a non-206 status (e.g. HTTP 530) instead of failing the track. Backport of upstream PR [#1722](https://github.com/librespot-org/librespot/pull/1722) for the spotatui fork.
 - [core] Fix dealer websocket reconnect leaving spirc hung on stale subscription channels. Port of upstream PR [#1692](https://github.com/librespot-org/librespot/pull/1692) for the spotatui fork.
 - [connect] Handle dealer reconnects in place without restarting spirc, and save/restore playback state across session loss (`Spirc::with_saved_state`). Part of the [#1692](https://github.com/librespot-org/librespot/pull/1692) port.
 - [connect] Skipping to the previous track from the first track of a context (under the 3-second mark) restarts that track instead of stopping playback, which left the player in a `Stopped` state that `play` could not leave. Fork-only; fixes spotatui [#366](https://github.com/LargeModGames/spotatui/issues/366).
@@ -21,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [playback] `Player::load` returns the play request id it assigned, so an embedder that drives the `Player` directly can tell its own playback events from Spirc's. The id generator moved from the player thread to the handle. Fork-only.
 - [connect] Spirc records the play request id of each load it issues and no longer adopts `PlayRequestIdChanged` events for loads it did not issue. Adopting them made Spirc treat an embedder's direct load as its own context: at that track's end it ran `handle_next`, found nothing, and stopped the player, silencing whatever the embedder had started since. Fork-only.
 - [core] `Credentials::with_blob` uses `#[allow(deprecated)]` instead of `#[expect]`, which reported itself unfulfilled on path builds. Fork-only.
+- [core] Pass on dealer messages that carry plain JSON, such as collection updates, instead of dropping them with a base64 warning
+- [core] Fixed AP login on Windows on ARM by using the supported desktop platform identifier
+- [audio] Fixed integer overflow in throughput calculation
+- [main] Fixed `--volume-ctrl fixed` not disabling volume control
+- [core] Fix default permissions on credentials file and warn user if file is world readable
+- [core] Try all resolved addresses for the dealer connection instead of failing after the first one.
+- [audio] Try the next CDN URL when a fetch returns a non-206 status instead of only retrying on transport errors, fixing playback failures when the first CDN URL is reachable but does not stream audio.
 
 ## [0.8.0] - 2025-11-10
 
