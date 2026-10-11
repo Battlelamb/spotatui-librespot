@@ -16,11 +16,16 @@ use crate::{
             ChallengeAnswer, ChallengeType, ClientTokenRequest, ClientTokenRequestType,
             ClientTokenResponse, ClientTokenResponseType,
         },
-        connect::PutStateRequest,
+        collection2v2::{
+            CollectionItem, ContainsRequest, ContainsResponse, DeltaRequest, DeltaResponse,
+            PageRequest, PageResponse, WriteRequest,
+        },
+        connect::{PutStateRequest, SetVolumeCommand},
         context::Context,
         extended_metadata::BatchedEntityRequest,
         extended_metadata::{BatchedExtensionResponse, EntityRequest, ExtensionQuery},
         extension_kind::ExtensionKind,
+        playlist4_external::{ListChanges, SelectedListContent},
     },
     token::Token,
     util,
@@ -60,7 +65,22 @@ const NO_METRICS_AND_SALT: RequestOptions = RequestOptions {
     metrics: false,
     salt: false,
     base_url: None,
+    retry: true,
 };
+
+/// For writes that must not land twice, such as a playlist append.
+const SEND_ONCE: RequestOptions = RequestOptions {
+    metrics: false,
+    salt: false,
+    base_url: None,
+    retry: false,
+};
+
+const COLLECTION_CONTENT_TYPE: &str = "application/vnd.collection-v2.spotify.proto";
+// The desktop client sends playlist changes with this type, although the body is protobuf.
+const PLAYLIST_CHANGES_CONTENT_TYPE: &str = "application/x-www-form-urlencoded";
+const PATHFINDER_URL: &str = "https://api-partner.spotify.com/pathfinder/v2/query";
+const PATHFINDER_APP_PLATFORM: &str = "Win32_x86_64";
 
 #[derive(Debug, Error)]
 pub enum SpClientError {
@@ -94,6 +114,7 @@ pub struct RequestOptions {
     metrics: bool,
     salt: bool,
     base_url: Option<&'static str>,
+    retry: bool,
 }
 
 impl Default for RequestOptions {
@@ -102,6 +123,7 @@ impl Default for RequestOptions {
             metrics: true,
             salt: true,
             base_url: None,
+            retry: true,
         }
     }
 }
@@ -422,7 +444,7 @@ impl SpClient {
         let mut headers = headers.unwrap_or_default();
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
 
-        self.request(method, endpoint, Some(headers), body.map(|s| s.as_bytes()))
+        self.request(method, endpoint, Some(headers), body.map(str::as_bytes))
             .await
     }
 
@@ -517,7 +539,7 @@ impl SpClient {
 
             last_response = self.session().http_client().request_body(request).await;
 
-            if last_response.is_ok() {
+            if last_response.is_ok() || !options.retry {
                 return last_response;
             }
 
@@ -595,7 +617,7 @@ impl SpClient {
     pub async fn get_metadata(&self, kind: ExtensionKind, id: &SpotifyUri) -> SpClientResult {
         let req = BatchedEntityRequest {
             entity_request: vec![EntityRequest {
-                entity_uri: id.to_uri()?,
+                entity_uri: id.to_uri(),
                 query: vec![ExtensionQuery {
                     extension_kind: EnumOrUnknown::new(kind),
                     ..Default::default()
@@ -645,7 +667,7 @@ impl SpClient {
     }
 
     pub async fn get_lyrics(&self, track_id: &SpotifyId) -> SpClientResult {
-        let endpoint = format!("/color-lyrics/v2/track/{}", track_id.to_base62()?);
+        let endpoint = format!("/color-lyrics/v2/track/{}", track_id.to_base62());
 
         self.request_as_json(&Method::GET, &endpoint, None, None)
             .await
@@ -658,7 +680,7 @@ impl SpClient {
     ) -> SpClientResult {
         let endpoint = format!(
             "/color-lyrics/v2/track/{}/image/spotify:image:{}",
-            track_id.to_base62()?,
+            track_id.to_base62(),
             image_id
         );
 
@@ -667,7 +689,7 @@ impl SpClient {
     }
 
     pub async fn get_playlist(&self, playlist_id: &SpotifyId) -> SpClientResult {
-        let endpoint = format!("/playlist/v2/playlist/{}", playlist_id.to_base62()?);
+        let endpoint = format!("/playlist/v2/playlist/{}", playlist_id.to_base62());
 
         self.request(&Method::GET, &endpoint, None, None).await
     }
@@ -716,7 +738,7 @@ impl SpClient {
     pub async fn get_radio_for_track(&self, track_uri: &SpotifyUri) -> SpClientResult {
         let endpoint = format!(
             "/inspiredby-mix/v2/seed_to_playlist/{}?response-format=json",
-            track_uri.to_uri()?
+            track_uri.to_uri()
         );
 
         self.request_as_json(&Method::GET, &endpoint, None, None)
@@ -749,8 +771,8 @@ impl SpClient {
 
         let previous_track_str = previous_tracks
             .iter()
-            .map(|track| track.to_base62())
-            .collect::<Result<Vec<_>, _>>()?
+            .map(SpotifyId::to_base62)
+            .collect::<Vec<_>>()
             .join(",");
         // better than checking `previous_tracks.len() > 0` because the `filter_map` could still return 0 items
         if !previous_track_str.is_empty() {
@@ -773,7 +795,7 @@ impl SpClient {
     pub async fn get_audio_storage(&self, file_id: &FileId) -> SpClientResult {
         let endpoint = format!(
             "/storage-resolve/files/audio/interactive/{}",
-            file_id.to_base16()?
+            file_id.to_base16()
         );
         self.request(&Method::GET, &endpoint, None, None).await
     }
@@ -819,7 +841,7 @@ impl SpClient {
             .get_user_attribute(ATTRIBUTE)
             .ok_or_else(|| SpClientError::Attribute(ATTRIBUTE.to_string()))?;
 
-        let mut url = template.replace("{id}", &preview_id.to_base16()?);
+        let mut url = template.replace("{id}", &preview_id.to_base16());
         let separator = match url.find('?') {
             Some(_) => "&",
             None => "?",
@@ -837,7 +859,7 @@ impl SpClient {
             .get_user_attribute(ATTRIBUTE)
             .ok_or_else(|| SpClientError::Attribute(ATTRIBUTE.to_string()))?;
 
-        let url = template.replace("{file_id}", &file_id.to_base16()?);
+        let url = template.replace("{file_id}", &file_id.to_base16());
 
         self.request_url(&url).await
     }
@@ -848,7 +870,7 @@ impl SpClient {
             .session()
             .get_user_attribute(ATTRIBUTE)
             .ok_or_else(|| SpClientError::Attribute(ATTRIBUTE.to_string()))?;
-        let url = template.replace("{file_id}", &image_id.to_base16()?);
+        let url = template.replace("{file_id}", &image_id.to_base16());
 
         self.request_url(&url).await
     }
@@ -952,9 +974,272 @@ impl SpClient {
             &Method::POST,
             &endpoint,
             None,
-            body.as_deref().map(|s| s.as_bytes()),
+            body.as_deref().map(str::as_bytes),
             &NO_METRICS_AND_SALT,
         )
         .await
+    }
+
+    async fn collection_request<M: Message>(&self, endpoint: &str, message: &M) -> SpClientResult {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static(COLLECTION_CONTENT_TYPE),
+        );
+        headers.insert(ACCEPT, HeaderValue::from_static(COLLECTION_CONTENT_TYPE));
+        let body = message.write_to_bytes()?;
+        self.request_with_options(
+            &Method::POST,
+            endpoint,
+            Some(headers),
+            Some(&body),
+            &NO_METRICS_AND_SALT,
+        )
+        .await
+    }
+
+    /// One page of a collection set: `collection` (liked tracks and saved albums),
+    /// `artist`, `show`, `listenlater`, `ylpin`. An empty token asks for the first page.
+    pub async fn get_collection_page(
+        &self,
+        set: &str,
+        pagination_token: &str,
+        limit: i32,
+    ) -> Result<PageResponse, Error> {
+        let request = PageRequest {
+            username: self.session().username(),
+            set: set.to_owned(),
+            pagination_token: pagination_token.to_owned(),
+            limit,
+            ..Default::default()
+        };
+        let bytes = self
+            .collection_request("/collection/v2/paging", &request)
+            .await?;
+        Ok(PageResponse::parse_from_bytes(&bytes)?)
+    }
+
+    pub async fn get_collection_delta(
+        &self,
+        set: &str,
+        last_sync_token: &str,
+    ) -> Result<DeltaResponse, Error> {
+        let request = DeltaRequest {
+            username: self.session().username(),
+            set: set.to_owned(),
+            last_sync_token: last_sync_token.to_owned(),
+            ..Default::default()
+        };
+        let bytes = self
+            .collection_request("/collection/v2/delta", &request)
+            .await?;
+        Ok(DeltaResponse::parse_from_bytes(&bytes)?)
+    }
+
+    /// Adds or removes items: `is_removed` marks a removal, `added_at` is in seconds.
+    pub async fn write_collection(
+        &self,
+        set: &str,
+        items: Vec<CollectionItem>,
+    ) -> Result<(), Error> {
+        let request = WriteRequest {
+            username: self.session().username(),
+            set: set.to_owned(),
+            items,
+            ..Default::default()
+        };
+        self.collection_request("/collection/v2/write", &request)
+            .await?;
+        Ok(())
+    }
+
+    /// Answers in the order of `uris`.
+    pub async fn collection_contains(&self, set: &str, uris: &[&str]) -> Result<Vec<bool>, Error> {
+        let request = ContainsRequest {
+            username: self.session().username(),
+            set: set.to_owned(),
+            items: uris
+                .iter()
+                .map(|uri| CollectionItem {
+                    uri: (*uri).to_owned(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let bytes = self
+            .collection_request("/collection/v2/contains", &request)
+            .await?;
+        let found = ContainsResponse::parse_from_bytes(&bytes)?.found;
+        if found.len() != uris.len() {
+            return Err(SpClientError::ExpectedEntry("collection contains").into());
+        }
+        Ok(found)
+    }
+
+    async fn post_list_changes(
+        &self,
+        endpoint: &str,
+        changes: &ListChanges,
+    ) -> Result<SelectedListContent, Error> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static(PLAYLIST_CHANGES_CONTENT_TYPE),
+        );
+        let body = changes.write_to_bytes()?;
+        let bytes = self
+            .request_with_options(
+                &Method::POST,
+                endpoint,
+                Some(headers),
+                Some(&body),
+                &SEND_ONCE,
+            )
+            .await?;
+        Ok(SelectedListContent::parse_from_bytes(&bytes)?)
+    }
+
+    /// Applies changes to a playlist. Sent once: a retry could add the tracks twice.
+    /// A new playlist uses a client-made id and the base revision `0000 0000 "root"`.
+    pub async fn post_playlist_changes(
+        &self,
+        playlist_id: &SpotifyId,
+        changes: &ListChanges,
+    ) -> Result<SelectedListContent, Error> {
+        let endpoint = format!("/playlist/v2/playlist/{}/changes", playlist_id.to_base62());
+        self.post_list_changes(&endpoint, changes).await
+    }
+
+    /// Adds, removes or moves playlists in the user's library list.
+    pub async fn post_rootlist_changes(
+        &self,
+        changes: &ListChanges,
+    ) -> Result<SelectedListContent, Error> {
+        let endpoint = format!(
+            "/playlist/v2/user/{}/rootlist/changes",
+            self.session().username()
+        );
+        self.post_list_changes(&endpoint, changes).await
+    }
+
+    /// Sends a player command such as `{"endpoint":"pause"}` to another Connect device.
+    /// The envelope, options and logging parameters are added here.
+    pub async fn send_player_command(
+        &self,
+        to_device_id: &str,
+        mut command: serde_json::Value,
+    ) -> SpClientResult {
+        let device_id = self.session().device_id().to_owned();
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let command_id = format!(
+            "{:032x}",
+            rand::rng().next_u64() as u128 | (now as u128) << 64
+        );
+        if let Some(object) = command.as_object_mut() {
+            object.entry("options").or_insert_with(|| {
+                serde_json::json!({
+                    "override_restrictions": false,
+                    "only_for_local_device": false,
+                    "system_initiated": false,
+                })
+            });
+            object.entry("logging_params").or_insert_with(|| {
+                serde_json::json!({
+                    "command_initiated_time": now,
+                    "command_received_time": now,
+                    "page_instance_ids": [],
+                    "interaction_ids": [],
+                    "device_identifier": device_id,
+                    "command_id": command_id,
+                })
+            });
+        }
+        let body = serde_json::json!({
+            "command": command,
+            "connection_type": "wlan",
+            "intent_id": command_id,
+        })
+        .to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(CONNECTION_ID, self.session().connection_id().parse()?);
+        let endpoint =
+            format!("/connect-state/v1/player/command/from/{device_id}/to/{to_device_id}");
+        self.request_with_options(
+            &Method::POST,
+            &endpoint,
+            Some(headers),
+            Some(body.as_bytes()),
+            &SEND_ONCE,
+        )
+        .await
+    }
+
+    /// Sets the volume (0..=65535) of another Connect device.
+    pub async fn set_remote_volume(&self, to_device_id: &str, volume: u16) -> SpClientResult {
+        let command = SetVolumeCommand {
+            volume: volume.into(),
+            ..Default::default()
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(CONNECTION_ID, self.session().connection_id().parse()?);
+        let endpoint = format!(
+            "/connect-state/v1/connect/volume/from/{}/to/{to_device_id}",
+            self.session().device_id()
+        );
+        let body = command.write_to_bytes()?;
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/x-protobuf"),
+        );
+        self.request_with_options(
+            &Method::PUT,
+            &endpoint,
+            Some(headers),
+            Some(&body),
+            &NO_METRICS_AND_SALT,
+        )
+        .await
+    }
+
+    /// Runs a persisted Pathfinder (GraphQL) query. A stale `sha256_hash` gives
+    /// HTTP 412 (`ErrorKind::FailedPrecondition`).
+    pub async fn pathfinder_query(
+        &self,
+        operation_name: &str,
+        sha256_hash: &str,
+        variables: serde_json::Value,
+    ) -> Result<serde_json::Value, Error> {
+        let body = serde_json::json!({
+            "variables": variables,
+            "operationName": operation_name,
+            "extensions": {"persistedQuery": {"version": 1, "sha256Hash": sha256_hash}},
+        })
+        .to_string();
+        let token = self.session().login5().auth_token().await?;
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri(PATHFINDER_URL)
+            .header(CONTENT_TYPE, "application/json;charset=UTF-8")
+            .header(ACCEPT, "application/json")
+            .header(
+                AUTHORIZATION,
+                format!("{} {}", token.token_type, token.access_token),
+            )
+            .header("app-platform", PATHFINDER_APP_PLATFORM)
+            .header("spotify-app-version", spotify_semantic_version())
+            .body(Bytes::from(body))?;
+        if let Ok(client_token) = self.client_token().await {
+            request
+                .headers_mut()
+                .insert(CLIENT_TOKEN, HeaderValue::from_str(&client_token)?);
+        }
+        let bytes = self.session().http_client().request_body(request).await?;
+        Ok(serde_json::from_slice(&bytes)?)
     }
 }

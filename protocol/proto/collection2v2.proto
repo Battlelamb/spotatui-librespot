@@ -46,6 +46,16 @@ message WriteRequest {
     string client_update_id = 4;
 }
 
+message ContainsRequest {
+    string username = 1;
+    string set = 2;
+    repeated CollectionItem items = 3;
+}
+
+message ContainsResponse {
+    repeated bool found = 1;
+}
+
 message InitializedRequest {
     string username = 1;
     string set = 2;

@@ -1,6 +1,6 @@
 [package]
 name = "spotatui-librespot-protocol"
-version = "0.8.3"
+version = "0.8.4"
 rust-version.workspace = true
 authors = ["Paul Liétar <paul@lietar.net>"]
 license.workspace = true
@@ -14,3 +14,6 @@ protobuf = "3"
 
 [build-dependencies]
 protobuf-codegen = "3"
+
+[lints]
+workspace = true
