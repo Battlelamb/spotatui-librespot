@@ -946,6 +946,19 @@ impl SpircTask {
                             preloading_of_next_track_triggered: false,
                         };
                     }
+                    // spotatui fork: a stale Paused from a paused load can overtake a resume and
+                    // leave Spirc paused while audio plays; the Player's Playing is the truth.
+                    SpircPlayStatus::Paused {
+                        preloading_of_next_track_triggered,
+                        ..
+                    } if matches!(event, PlayerEvent::Playing { .. }) => {
+                        self.connect_state
+                            .update_position(position_ms, self.now_ms());
+                        self.play_status = SpircPlayStatus::Playing {
+                            nominal_start_time: new_nominal_start_time,
+                            preloading_of_next_track_triggered,
+                        };
+                    }
                     _ => return Ok(()),
                 }
             }
