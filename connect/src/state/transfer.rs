@@ -90,7 +90,7 @@ impl ConnectState {
             }
         }
 
-        const UNKNOWN_URI: &str = "spotify:unknown";
+        use crate::state::context::UNKNOWN_URI;
         // it's important to always set the url/uri to a value
         // so that the player doesn't go into an inactive state
         let uri = ctx_uri.unwrap_or(UNKNOWN_URI.into());

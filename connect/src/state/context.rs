@@ -20,6 +20,10 @@ use uuid::Uuid;
 
 const LOCAL_FILES_IDENTIFIER: &str = "spotify:local-files";
 const SEARCH_IDENTIFIER: &str = "spotify:search";
+/// The context uri of a track list loaded by uris; Spotify cannot resolve it.
+pub(crate) const WEB_API_URI: &str = "spotify:web-api";
+/// The context uri published when a transfer names none; Spotify cannot resolve it.
+pub(crate) const UNKNOWN_URI: &str = "spotify:unknown";
 
 #[derive(Debug)]
 pub struct StateContext {
@@ -138,7 +142,13 @@ impl ConnectState {
     }
 
     pub fn valid_resolve_uri(uri: &str) -> Option<&str> {
-        if uri.is_empty() || uri.starts_with(SEARCH_IDENTIFIER) {
+        // The placeholders reach Spotify as the account's last context and come back in a
+        // transfer; resolving them fails with 400 and strands the transfer with no next track.
+        if uri.is_empty()
+            || uri.starts_with(SEARCH_IDENTIFIER)
+            || uri == WEB_API_URI
+            || uri == UNKNOWN_URI
+        {
             None
         } else {
             Some(uri)

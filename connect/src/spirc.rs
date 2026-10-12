@@ -1295,11 +1295,15 @@ impl SpircTask {
     }
 
     fn handle_transfer(&mut self, mut transfer: TransferState) -> Result<(), Error> {
+        let has_tracks = transfer
+            .current_session
+            .context
+            .pages
+            .iter()
+            .any(|page| !page.tracks.is_empty());
         let mut ctx_uri = match transfer.current_session.context.uri {
             None => Err(SpircError::NoUri("transfer context"))?,
-            // can apparently happen when a state is transferred and was started with "uris" via the api
-            Some(ref uri) if uri == "-" || uri.is_empty() => None,
-            Some(ref uri) => Some(uri.clone()),
+            Some(ref uri) => transfer_context_uri(uri, has_tracks),
         };
 
         self.connect_state.reset_context(
@@ -1407,8 +1411,18 @@ impl SpircTask {
                 Ok(ctx) => {
                     let idx = ConnectState::find_index_in_context(ctx, |pt| {
                         self.connect_state.current_track(|t| pt.uri == t.uri)
-                    })?;
-                    self.connect_state.reset_playback_to_position(Some(idx))?;
+                    });
+                    // A list without the current track plays from its first track instead of failing the transfer.
+                    let idx = match idx {
+                        Ok(idx) => Some(idx),
+                        Err(why) => {
+                            warn!("current track is not in the transferred tracks: {why}");
+                            None
+                        }
+                    };
+                    self.connect_state.reset_playback_to_position(idx)?;
+                    // As a load does: a short transferred list ends in autoplay, not a stop.
+                    self.add_autoplay_resolving_when_required();
                 }
             }
         }
@@ -1635,7 +1649,7 @@ impl SpircTask {
     }
 
     fn load_context_from_tracks(&mut self, tracks: impl Into<ContextPage>) -> Result<(), Error> {
-        const WEB_API_URI: &str = "spotify:web-api";
+        use crate::state::context::WEB_API_URI;
         let ctx = Context {
             // by providing values for uri/url the player in the official client's isn't frozen
             uri: Some(WEB_API_URI.into()),
@@ -2082,5 +2096,46 @@ impl SpircTask {
 impl Drop for SpircTask {
     fn drop(&mut self) {
         debug!("drop Spirc[{}]", self.spirc_id);
+    }
+}
+
+/// The context uri a transfer resolves; `None` loads the transferred tracks instead.
+/// A placeholder uri cannot be resolved, so its tracks are used when the transfer carries them.
+fn transfer_context_uri(uri: &str, has_tracks: bool) -> Option<String> {
+    use crate::state::context::{UNKNOWN_URI, WEB_API_URI};
+    match uri {
+        // can apparently happen when a state is transferred and was started with "uris" via the api
+        "-" | "" => None,
+        WEB_API_URI | UNKNOWN_URI if has_tracks => None,
+        uri => Some(uri.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_placeholder_transfer_with_tracks_loads_its_tracks() {
+        assert_eq!(transfer_context_uri("spotify:web-api", true), None);
+        assert_eq!(transfer_context_uri("spotify:unknown", true), None);
+    }
+
+    #[test]
+    fn a_placeholder_transfer_without_tracks_keeps_its_uri() {
+        assert_eq!(
+            transfer_context_uri("spotify:web-api", false).as_deref(),
+            Some("spotify:web-api")
+        );
+    }
+
+    #[test]
+    fn a_real_context_and_an_empty_uri_keep_their_meaning() {
+        assert_eq!(
+            transfer_context_uri("spotify:album:x", true).as_deref(),
+            Some("spotify:album:x")
+        );
+        assert_eq!(transfer_context_uri("-", false), None);
+        assert_eq!(transfer_context_uri("", true), None);
     }
 }

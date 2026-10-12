@@ -344,3 +344,35 @@ impl ContextResolver {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::context::{UNKNOWN_URI, WEB_API_URI};
+
+    const TRACK: &str = "spotify:track:0bMbDctzMmTyK2j74j3nF3";
+
+    #[test]
+    fn a_placeholder_context_resolves_through_the_current_track() {
+        for placeholder in [WEB_API_URI, UNKNOWN_URI] {
+            for update in [ContextType::Default, ContextType::Autoplay] {
+                let ctx =
+                    ResolveContext::from_uri(placeholder, TRACK, update, ContextAction::Replace);
+                assert_eq!(ctx.resolve_uri(), Some(TRACK));
+                assert_eq!(ctx.context_uri(), placeholder);
+            }
+        }
+    }
+
+    #[test]
+    fn a_real_context_still_resolves_itself() {
+        let playlist = "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M";
+        let ctx = ResolveContext::from_uri(
+            playlist,
+            TRACK,
+            ContextType::Default,
+            ContextAction::Replace,
+        );
+        assert_eq!(ctx.resolve_uri(), Some(playlist));
+    }
+}
