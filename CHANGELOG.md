@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- [connect] A transfer of a session that was started with `uris` no longer stops at the end of its first track. The placeholder contexts `spotify:web-api` and `spotify:unknown` are never sent to context-resolve (Spotify answered 400 and the transfer never finished); a transfer with a placeholder loads the tracks it carries, and a transfer that loads tracks queues autoplay as a load does. Fork-only.
+- [connect] A `Playing` player event now moves a `Paused` Spirc to `Playing`. A stale `Paused` from a paused load could overtake a resume, so audio played while Spirc reported paused and the next track loaded paused. Fork-only.
 - [core] Fix dealer websocket reconnect leaving spirc hung on stale subscription channels. Port of upstream PR [#1692](https://github.com/librespot-org/librespot/pull/1692) for the spotatui fork.
 - [connect] Handle dealer reconnects in place without restarting spirc, and save/restore playback state across session loss (`Spirc::with_saved_state`). Part of the [#1692](https://github.com/librespot-org/librespot/pull/1692) port.
 - [connect] Skipping to the previous track from the first track of a context (under the 3-second mark) restarts that track instead of stopping playback, which left the player in a `Stopped` state that `play` could not leave. Fork-only; fixes spotatui [#366](https://github.com/LargeModGames/spotatui/issues/366).
