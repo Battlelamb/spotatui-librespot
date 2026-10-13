@@ -10,8 +10,13 @@ pub(crate) const IOS_CLIENT_ID: &str = "58bd3c95768941ea9eb4350aaa033eb3";
 // Easily adjust the current platform to mock the behavior on it. If for example
 // android or ios needs to be mocked, the `os_version` has to be set to a valid version.
 // Otherwise, client-token or login5 requests will fail with a generic invalid-credential error.
-/// See [std::env::consts::OS]
-pub const OS: &str = std::env::consts::OS;
+/// See [std::env::consts::OS]. Android presents as Linux: spotatui logs in with the
+/// desktop client id, and login5 refuses those credentials under the Android identity.
+pub const OS: &str = if cfg!(target_os = "android") {
+    "linux"
+} else {
+    std::env::consts::OS
+};
 
 // valid versions for some os:
 // 'android': 30
