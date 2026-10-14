@@ -1,0 +1,37 @@
+name: Library bug
+description: A bug you know is in the spotatui-librespot code. Report what you see in spotatui on the spotatui tracker instead.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What the library does, what you expected, and why you think the cause is here.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: For a track that fails, include its Spotify URI.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: The spotatui version (`spotatui --version`) and the spotatui-librespot version, or the fork commit.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and playback backend
+      placeholder: Arch Linux with alsa-backend, Windows 11 with rodio-backend ...
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: A `spotatui --debug` log (or `SPOTATUI_LOG=trace` for librespot's playback logging), or a backtrace. Remove anything private first.

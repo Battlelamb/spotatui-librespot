@@ -1,72 +1,48 @@
-# spotatui's maintained librespot fork
+# spotatui's librespot fork
 
-This is a fork of [librespot-org/librespot](https://github.com/librespot-org/librespot),
-maintained for [spotatui](https://github.com/LargeModGames/spotatui) because upstream is
-slow to merge and release fixes (the `dev` branch had no commits between 2026-02-09 and at
-least mid-2026, while Spotify keeps changing audio delivery).
+This is a fork of [librespot-org/librespot](https://github.com/librespot-org/librespot), maintained for [spotatui](https://github.com/LargeModGames/spotatui). spotatui depends on APIs that only this fork has (see the `Fork-only.` lines in [CHANGELOG.md](CHANGELOG.md)), and the fork lets a fix for a Spotify-side change ship in a spotatui release without waiting for an upstream release.
+
+## Base
+
+The `spotatui` branch is upstream `dev` plus the fork's own commits. Upstream is merged in regularly; to see how far it was last merged, run:
+
+```bash
+git remote add upstream https://github.com/librespot-org/librespot.git
+git fetch upstream
+git log -1 "$(git merge-base origin/spotatui upstream/dev)"
+```
+
+The upstream changes since that merge-base are not in the fork yet.
+
+## Branches
+
+- `spotatui`: the default branch. PRs target it, and the crates are published from it.
+- Other branches are feature branches; merged ones can be deleted. `dev` is an old copy of upstream `dev` and is not used.
 
 ## Published crates
 
-The seven library crates are published on crates.io under fork names, versioned in
-lockstep, starting at **0.8.1** (= upstream v0.8.0 + the patches below):
-
-`spotatui-librespot-{core, connect, playback, audio, metadata, protocol, oauth}`
-
-Consumers depend on them with Cargo's `package =` rename so imports stay `librespot_*`:
+The seven library crates are on crates.io as `spotatui-librespot-{protocol, oauth, core, metadata, audio, playback, connect}`, all with the same version. spotatui pins the ones it uses with `=` and renames them, so its imports stay `librespot_*`:
 
 ```toml
-librespot-core = { package = "spotatui-librespot-core", version = "=0.8.1" }
+librespot-core = { package = "spotatui-librespot-core", version = "=<version>" }
 ```
 
-The root `librespot` binary crate and `librespot-discovery` are `publish = false`;
-spotatui does not use them.
+The root `librespot` binary crate and `librespot-discovery` are `publish = false`; spotatui does not use them.
 
-## Branch `spotatui`
+## What the fork changes
 
-The publishing branch: upstream **v0.8.0** plus the patches spotatui needs.
+Every change that exists only here has a line in `CHANGELOG.md` that ends with `Fork-only.`. A port of an upstream PR that upstream has not merged yet names that PR. When upstream merges an equal change, the fork line goes away in the next upstream merge.
 
-## Carried patches
+## Release
 
-- **CDN 530 fallback** (backport of upstream PR #1722, issue #1725): in
-  `audio/src/fetch/mod.rs`, move the 206 check inside the CDN-URL retry loop so a non-206
-  response falls through to the next URL instead of failing the track. Spotify serves HTTP
-  530 from some CDN nodes while other URLs from the same `storage-resolve` work; without
-  this, native playback is silent.
-- **Dealer reconnect / session-loss recovery** (port of upstream PR #1692): reconnect the
-  dealer WebSocket and recover the session without interrupting playback.
-- **OAuth callback listener hardening** (fork-only): keep the login callback listener
-  alive through browser noise (empty lines, header blocks, connection reuse), handle one
-  request per connection, and bound the deadline at the read layer so a captured code is
-  never discarded.
-- **Session disconnect reason** (fork-only API): `connect` reports why a session ended
-  (external device handoff vs. unexpected loss vs. local stop) so spotatui can classify
-  teardowns instead of inferring them. spotatui depends on this API; the fork cannot be
-  swapped for upstream 0.8.
-- **Previous on the first track restarts it** (fork-only, 0.8.2): upstream's
-  `handle_prev` stops playback when there is no previous track, stranding the player in
-  `Stopped` (which `handle_play` cannot leave). Spotify's own clients restart the first
-  track; the fork does the same. spotatui #366.
-- **Play status follows `PlayerEvent::Seeked`** (fork-only, 0.8.2): seeks issued directly
-  on the `Player` (spotatui does this) now update spirc's play status, so its position and
-  the previous-track 3-second rule stay accurate.
-- **`Player::load` returns its play request id, Spirc keeps its own** (fork-only API,
-  0.8.3): upstream Spirc learned its play request id from the `PlayRequestIdChanged`
-  event, so it adopted every load an embedder sent straight to the `Player`. At that
-  track's end it ran `handle_next` against a context it never loaded and stopped the
-  player, silencing the embedder's next load (spotatui's native queue slot). Now `load`
-  hands the id back and Spirc records only the loads it issues. spotatui ignores the
-  return value but depends on the filter.
+1. CI is green on `spotatui`.
+2. Set the same new version everywhere it appears: the `[package]` version of each of the seven crates, every `librespot-*` dependency line in the crate manifests (discovery included), and `[workspace.dependencies]` in the root `Cargo.toml`.
+3. Commit, then publish from that committed tree, in dependency order. `cargo publish --workspace` cannot continue a run that stopped partway, so publish one crate at a time:
 
-## Upstream status
+   ```bash
+   for c in protocol oauth core metadata audio playback connect; do
+     cargo publish -p "spotatui-librespot-$c" || break
+   done
+   ```
 
-- PR #1722: open, unmerged as of 2026-06-21.
-- librespot `dev` branch: dormant since 2026-02-09.
-
-## Maintenance
-
-The fork is maintained standalone: cherry-pick what spotatui needs from upstream onto the
-`spotatui` branch, bump all seven crate versions in lockstep, and republish with
-`cargo publish --workspace` (order is resolved automatically; the dirty-tree check means
-you publish from a committed tree). Then bump the `=`-pinned versions in spotatui's
-`Cargo.toml`. Fork-only API additions (like the disconnect reason) mean upstream releases
-can no longer be dropped in as-is.
+4. In spotatui, open a PR that sets the new version in every `=` pin of `Cargo.toml`, runs a cargo command so `Cargo.lock` updates, refreshes `desktop/Cargo.lock`, and is tested with a full `cargo run`.
