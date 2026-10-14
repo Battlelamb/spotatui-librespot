@@ -17,20 +17,17 @@ default = ["native-tls"]
 # Note: Validation is in oauth since it's compiled first in the dependency tree.
 native-tls = [
     "dep:hyper-tls",
-    "hyper-proxy2/tls",
     "librespot-oauth/native-tls",
     "tokio-tungstenite/native-tls",
 ]
 rustls-tls-native-roots = [
     "__rustls",
-    "hyper-proxy2/rustls",
     "hyper-rustls/native-tokio",
     "librespot-oauth/rustls-tls-native-roots",
     "tokio-tungstenite/rustls-tls-native-roots",
 ]
 rustls-tls-webpki-roots = [
     "__rustls",
-    "hyper-proxy2/rustls-webpki",
     "hyper-rustls/webpki-tokio",
     "librespot-oauth/rustls-tls-webpki-roots",
     "tokio-tungstenite/rustls-tls-webpki-roots",
