@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- [core] On Android, `config::OS` is `"linux"`, so a login with the desktop client id works there. Under the Android identity, login5 refused those credentials and Spirc could not start. Fork-only.
 - [connect] A transfer of a session that was started with `uris` no longer stops at the end of its first track. The placeholder contexts `spotify:web-api` and `spotify:unknown` are never sent to context-resolve (Spotify answered 400 and the transfer never finished); a transfer with a placeholder loads the tracks it carries, and a transfer that loads tracks queues autoplay as a load does. Fork-only.
 - [connect] A `Playing` player event now moves a `Paused` Spirc to `Playing`. A stale `Paused` from a paused load could overtake a resume, so audio played while Spirc reported paused and the next track loaded paused. Fork-only.
 - [core] Fix dealer websocket reconnect leaving spirc hung on stale subscription channels. Port of upstream PR [#1692](https://github.com/librespot-org/librespot/pull/1692) for the spotatui fork.
