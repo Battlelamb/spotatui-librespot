@@ -92,7 +92,7 @@ impl From<HttpClientError> for Error {
     }
 }
 
-type HyperClient = Client<ProxyConnector<HttpsConnector<HttpConnector>>, Full<bytes::Bytes>>;
+type HyperClient = Client<HttpsConnector<ProxyConnector<HttpConnector>>, Full<bytes::Bytes>>;
 
 pub struct HttpClient {
     user_agent: HeaderValue,
@@ -147,29 +147,36 @@ impl HttpClient {
     fn try_create_hyper_client(proxy_url: Option<&Url>) -> Result<HyperClient, Error> {
         // configuring TLS is expensive and should be done once per process
 
-        #[cfg(all(feature = "__rustls", not(feature = "native-tls")))]
-        let https_connector = {
-            #[cfg(feature = "rustls-tls-native-roots")]
-            let tls = HttpsConnectorBuilder::new().with_native_roots()?;
-            #[cfg(feature = "rustls-tls-webpki-roots")]
-            let tls = HttpsConnectorBuilder::new().with_webpki_roots();
-            tls.https_or_http().enable_http1().enable_http2().build()
-        };
-
-        #[cfg(all(feature = "native-tls", not(feature = "__rustls")))]
-        let https_connector = HttpsConnector::new();
-
         // When not using a proxy a dummy proxy is configured that will not intercept any traffic.
         // This prevents needing to carry the Client Connector generics through the whole project
         let proxy = match &proxy_url {
             Some(proxy_url) => Proxy::new(Intercept::All, proxy_url.to_string().parse()?),
             None => Proxy::new(Intercept::None, Uri::from_static("0.0.0.0")),
         };
-        let proxy_connector = ProxyConnector::from_proxy(https_connector, proxy)?;
+        // The proxy connector only opens the CONNECT tunnel; the TLS connector around it
+        // secures the tunnel, so hyper-proxy2 needs no TLS stack of its own.
+        let mut http = HttpConnector::new();
+        http.enforce_http(false);
+        let proxy_connector = ProxyConnector::from_proxy_unsecured(http, proxy);
+
+        #[cfg(all(feature = "__rustls", not(feature = "native-tls")))]
+        let https_connector = {
+            #[cfg(feature = "rustls-tls-native-roots")]
+            let tls = HttpsConnectorBuilder::new().with_native_roots()?;
+            #[cfg(feature = "rustls-tls-webpki-roots")]
+            let tls = HttpsConnectorBuilder::new().with_webpki_roots();
+            tls.https_or_http()
+                .enable_http1()
+                .enable_http2()
+                .wrap_connector(proxy_connector)
+        };
+
+        #[cfg(all(feature = "native-tls", not(feature = "__rustls")))]
+        let https_connector = HttpsConnector::new_with_connector(proxy_connector);
 
         let client = Client::builder(TokioExecutor::new())
             .http2_adaptive_window(true)
-            .build(proxy_connector);
+            .build(https_connector);
         Ok(client)
     }
 
