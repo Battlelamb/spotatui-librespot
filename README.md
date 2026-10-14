@@ -1,4 +1,4 @@
-> **This is [spotatui](https://github.com/LargeModGames/spotatui)'s maintained fork of librespot.** It carries backported fixes (currently the CDN HTTP 530 audio-fetch fallback, upstream PR #1722) on the `spotatui` branch. See [SPOTATUI_FORK.md](SPOTATUI_FORK.md). For the upstream project, see [librespot-org/librespot](https://github.com/librespot-org/librespot).
+> **This is [spotatui](https://github.com/LargeModGames/spotatui)'s librespot fork, published as the `spotatui-librespot-*` crates.** Read [.github/README.md](.github/README.md) for what it changes and how to contribute. The rest of this file is the upstream README; for the upstream project, see [librespot-org/librespot](https://github.com/librespot-org/librespot).
 
 [![Build Status](https://github.com/librespot-org/librespot/workflows/build/badge.svg)](https://github.com/librespot-org/librespot/actions)
 [![Gitter chat](https://badges.gitter.im/librespot-org/librespot.png)](https://gitter.im/librespot-org/spotify-connect-resources)

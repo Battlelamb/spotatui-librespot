@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- [playback] Include a disconnect reason in `PlayerEvent::SessionDisconnected` so consumers can distinguish external device handoffs from local commands and unexpected shutdowns (breaking).
+- [playback] Include a disconnect reason in `PlayerEvent::SessionDisconnected` so consumers can distinguish external device handoffs from local commands and unexpected shutdowns (breaking). Fork-only.
 - [connect] Add method `add_to_queue` to `Spirc` to add tracks, episodes, albums and playlists to the queue
 - [connect] Add method `clear_queue` to `Spirc` to remove all manually queued tracks
 - [playback] Add `SetQueue` player event, emitting when the queue changes (context loaded, track added to queue, or queue set via Spotify Connect). Gated behind `ConnectConfig::emit_set_queue_events`
@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [connect] Keep spirc's play status in sync with `PlayerEvent::Seeked`, so a seek issued directly on the `Player` no longer leaves `Spirc` reporting the pre-seek position (and misapplying the previous-track 3-second rule) until the next Playing/Paused event. Fork-only.
 - [playback] `Player::load` returns the play request id it assigned, so an embedder that drives the `Player` directly can tell its own playback events from Spirc's. The id generator moved from the player thread to the handle. Fork-only.
 - [connect] Spirc records the play request id of each load it issues and no longer adopts `PlayRequestIdChanged` events for loads it did not issue. Adopting them made Spirc treat an embedder's direct load as its own context: at that track's end it ran `handle_next`, found nothing, and stopped the player, silencing whatever the embedder had started since. Fork-only.
+- [oauth] The login callback listener survives browser noise (empty lines, header blocks, reused connections), handles one request per connection, and enforces its deadline at the read, so a captured code is never discarded. Fork-only.
 - [core] `Credentials::with_blob` uses `#[allow(deprecated)]` instead of `#[expect]`, which reported itself unfulfilled on path builds. Fork-only.
 - [core] Pass on dealer messages that carry plain JSON, such as collection updates, instead of dropping them with a base64 warning
 - [core] Fixed AP login on Windows on ARM by using the supported desktop platform identifier

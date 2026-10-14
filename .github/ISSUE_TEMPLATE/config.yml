@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: A problem in spotatui
+    url: https://github.com/LargeModGames/spotatui/issues/new/choose
+    about: Report what you see in spotatui on its own tracker, even when the cause may be in this library.
+  - name: Questions and help
+    url: https://spotatui.com/discord
+    about: The spotatui Discord.
+  - name: Security reports
+    url: https://github.com/LargeModGames/spotatui/security/policy
+    about: Report vulnerabilities privately, as spotatui's security policy says.
