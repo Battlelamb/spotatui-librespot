@@ -1,0 +1,67 @@
+---
+name: ci
+
+"on":
+  push:
+    branches: [spotatui]
+  pull_request:
+
+env:
+  RUST_BACKTRACE: 1
+  # The seven crates spotatui consumes from crates.io.
+  PACKAGES: >-
+    -p spotatui-librespot-core
+    -p spotatui-librespot-connect
+    -p spotatui-librespot-oauth
+    -p spotatui-librespot-metadata
+    -p spotatui-librespot-protocol
+    -p spotatui-librespot-audio
+    -p spotatui-librespot-playback
+
+jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # Each OS adds the playback backend spotatui ships there.
+  test:
+    name: clippy + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            backend: alsa-backend
+          - os: windows-latest
+            backend: rodio-backend
+          - os: macos-latest
+            backend: portaudio-backend
+    env:
+      FEATURES: spotatui-librespot-playback/${{ matrix.backend }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y -qq pkg-config libssl-dev libasound2-dev
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install portaudio
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        shell: bash
+        run: cargo clippy --locked $PACKAGES --features "$FEATURES" -- -D warnings
+      # Unit tests only: the integration tests, doc tests and examples still
+      # import the upstream crate names and do not compile after the rename.
+      - name: Test
+        shell: bash
+        run: cargo test --locked $PACKAGES --features "$FEATURES" --lib
